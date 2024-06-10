@@ -13,9 +13,9 @@
 # COMMAND ----------
 
 data_spec = (dg.DataGenerator(spark, name="feature_data", rows=1000)
-            .withColumn("feature1", FloatType(), minValue=0, maxValue=100, random=True)
-            .withColumn("feature2", FloatType(), minValue=0, maxValue=50, random=True)
-            .withColumn("feature3", FloatType(), minValue=0, maxValue=25, random=True)
+            .withColumn("sensor1", FloatType(), minValue=0, maxValue=100, random=True)
+            .withColumn("sensor2", FloatType(), minValue=0, maxValue=50, random=True)
+            .withColumn("sensor3", FloatType(), minValue=0, maxValue=25, random=True)
             .withColumn("result", StringType(), values=['class1', 'class2', 'class3', 'class4', 'class5', 
                                                         'class6', 'class7', 'class8', 'class9', 'class10'], random=True))
 
@@ -25,7 +25,7 @@ df_features = data_spec.build()
 
 features = df_features.toPandas()
 
-X = features[['feature1', 'feature2', 'feature3']]
+X = features[['sensor1', 'sensor2', 'sensor3']]
 y = features['result']
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
 
@@ -73,7 +73,7 @@ predict_udf = mlflow.pyfunc.spark_udf(spark, model_uri)
 
 # COMMAND ----------
 
-# Apply the model to a streaming DataFrame
+# Apply the model to a Spark DataFrame in parallel
 predictions_df = (
     df_features.withColumn("predictions", predict_udf(struct(*df_features.columns)))
     .select("*", "predictions.*")

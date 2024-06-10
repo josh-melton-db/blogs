@@ -1,4 +1,9 @@
 # Databricks notebook source
+# MAGIC %md
+# MAGIC ## For the corresponding blog post, [check here](https://community.databricks.com/t5/technical-blog/scaling-pandas-with-databricks-passing-parameters-to-pandas-udfs/ba-p/65123)
+
+# COMMAND ----------
+
 import pandas as pd
 
 df = spark.createDataFrame(pd.DataFrame({'type': ['turbine', 'turbine', 'propeller', 'turbine', 'propeller', 'propeller'],

@@ -1,4 +1,9 @@
 # Databricks notebook source
+# MAGIC %md
+# MAGIC ## For the blog post corresponding to this notebook, [check here](https://community.databricks.com/t5/technical-blog/grouped-pandas-optimization/ba-p/68666)
+
+# COMMAND ----------
+
 from pyspark.sql.functions import rand
 import pandas as pd
 
