@@ -60,9 +60,9 @@ display(predictions)
 
 # COMMAND ----------
 
-signature = infer_signature(sample, predictions)
+signature = infer_signature(X_test.head(), predictions.head())
 with mlflow.start_run() as run:
-    logged_model = mlflow.pyfunc.log_model("model", python_model=prob_model, input_example=sample, signature=signature)
+    logged_model = mlflow.pyfunc.log_model("model", python_model=prob_model, input_example=X_test.head(), signature=signature)
 
 # COMMAND ----------
 
