@@ -12,7 +12,7 @@
 
 # COMMAND ----------
 
-data_spec = (dg.DataGenerator(spark, name="feature_data", rows=1000)
+data_spec = (dg.DataGenerator(spark, rows=1000)
             .withColumn("sensor1", FloatType(), minValue=0, maxValue=100, random=True)
             .withColumn("sensor2", FloatType(), minValue=0, maxValue=50, random=True)
             .withColumn("sensor3", FloatType(), minValue=0, maxValue=25, random=True)
