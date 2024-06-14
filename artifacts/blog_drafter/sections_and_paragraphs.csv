@@ -1,0 +1,614 @@
+Section,Paragraph,Topic
+"a. Introduction to the approach of making certain applyInPandas operations faster 
+b. Explanation of generating dummy data for the example using Spark 
+c. Code for generating the initial dataframe with specified number of rows, devices, and trips","In this short tutorial, we’ll implement an approach to making certain applyInPandas operations run many times faster. First, let's generate some dummy data for this example using Spark. For our example, we’ll create a function that returns a dataframe with the specified number of rows, devices, and trips. In this case, we’ll create five million rows for 100 devices that take 1,000 trips each, with some random “sensor_reading” data to process. If we paste this into Databricks, it should take just a moment to run:
+
+from pyspark.sql.functions import rand
+import pandas as pd
+
+def generate_initial_df(num_rows, num_devices, num_trips):
+   return (
+       spark.range(num_rows)
+      .withColumn('device_id', (rand()*num_devices).cast('int'))
+      .withColumn('trip_id', (rand()*num_trips).cast('int'))
+      .withColumn('sensor_reading', (rand()*1000))
+      .drop('id')
+   )
+
+df = generate_initial_df(5000000, 100, 1000)
+df.display()",Optimizing the performance of applyInPandas operations in Spark by combining distributed processing with in-memory processing using custom aggregators.
+"a. Traditional approach of using applyInPandas for applying Pandas operations to groups within a Spark dataframe 
+b. Code for applying a custom normalization function to groups of devices and trips 
+c. Explanation of the time taken for completion of the traditional approach","Typically, to apply Pandas operations to groups within a Spark dataframe, we’d use applyInPandas like below. This can be helpful when you have a requirement to process data by some specific key(s), such as the groups of devices and trips. We could run custom aggregations on certain groups, or normalization per device and trip like in the example below:
+
+def normalize_device_and_trip(pdf: pd.DataFrame) -> pd.DataFrame:
+  reading = pdf.sensor_reading
+  pdf['normalized_reading'] = reading.mean() / reading.std()
+  return pdf
+
+expected_schema = 'device_id int, trip_id int, sensor_reading long, normalized_reading long'
+df.groupBy('device_id', 'trip_id').applyInPandas(normalize_device_and_trip, expected_schema).display()",Optimizing the performance of applyInPandas operations in Spark by combining distributed processing with in-memory processing using custom aggregators.
+"a. Explanation of the issue with the traditional approach when groupings are too large to fit in memory 
+b. Code for calculating the average number of rows per device and trip","Unfortunately, this may take more time to complete than expected given the small volume of data (roughly a little over a minute, depending on your cluster). In the background, Spark is using PyArrow to serialize each group into a Pandas dataframe and run the computation you defined on each group in parallel across the cluster. This is fine when you have a lot of data in each group. However, in this case, we know we have very few rows per group - just fifty rows per trip on average but fifty thousand per device_id:
+
+print(df.count() / df.select('device_id').distinct().count()) # 50,000
+print(df.count() / df.select('device_id', 'trip_id').distinct().count()) # ~50",Optimizing the performance of applyInPandas operations in Spark by combining distributed processing with in-memory processing using custom aggregators.
+"a. Improved approach combining Spark’s custom aggregator with traditional Pandas custom aggregator 
+b. Code for normalizing device and trip data using the improved approach 
+c. Explanation of the time taken for completion of the improved approach","
+
+We get the best of in-memory processing and distributed processing by combining Spark’s custom aggregator, applyInPandas, with the traditional Pandas custom aggregator. In this example we’ll process each device_id group in parallel (distributed and serialized), then aggregate further on the trip_id (not distributed or serialized further):
+
+def normalize_trip(pdf: pd.DataFrame) -> pd.DataFrame:
+  reading = pdf.sensor_reading
+  pdf['normalized_reading'] = reading.mean() / reading.std()
+  return pdf
+
+def normalize_device(pdf: pd.DataFrame) -> pd.DataFrame:
+   return pdf.groupby('trip_id').apply(normalize_trip)
+
+expected_schema = 'device_id int, trip_id int, sensor_reading long, normalized_reading long'
+df.groupBy('device_id').applyInPandas(normalize_device, expected_schema).display()",Optimizing the performance of applyInPandas operations in Spark by combining distributed processing with in-memory processing using custom aggregators.
+"a. Comparison of the traditional and improved approaches 
+b. Discussion on the balance between distributed processing and in-memory processing 
+c. Suggestion for further testing with different sizes of data to determine the optimal approach.","
+
+Feel free to generate different sizes of data to see which groupings work better or worse. The balance may be tough to strike, but if you know your data extremely well and it won’t change dramatically over time, the combined grouping approaches can significantly improve performance and cost savings for your data processing.",Optimizing the performance of applyInPandas operations in Spark by combining distributed processing with in-memory processing using custom aggregators.
+a. Introduction to Natural Language Processing (NLP) techniques and their benefits b. Explanation of using NLP techniques without the need for large foundational models (GenAI) c. Overview of the techniques that will be explored in the article,"
+
+The GenAI boom has been very beneficial, as it has brought to light numerous use cases that can leverage Natural Language Processing (NLP) techniques. NLP represents a field in AI that consists of several machine learning algorithms that analyze and understand human language and generate text with content similar to what humans would do. GenAI is not a necessity for NLP. You can still gain significant results through NLP techniques that do not require large foundational models associated with GenAI use cases. These use cases can be developed quickly with just a few lines of code at a really low cost while still reaching a fair level of performance and leverage open source models.","Two efficient classification techniques, zero-shot learning and few-shot learning, for implementing large language models (LLMs) in Databricks, and demonstrates how to deploy and serve these models in production using MLflow and Unity Catalog"
+a. Text classification as a common NLP task b. Explanation of zero-shot learning and few-shot learning for text classification c. Discussion on the advantages of using these techniques,"
+
+A common task in NLP is text classification - where we assign labels to our text. This improves the evaluation and post-analysis steps, by allowing us to organize our raw texts into a set of metadata categories. Attaching these metadata to our text significantly facilitates key information extraction. Several methods to help accomplish this task include zero-shot classification or few-shot classification.","Two efficient classification techniques, zero-shot learning and few-shot learning, for implementing large language models (LLMs) in Databricks, and demonstrates how to deploy and serve these models in production using MLflow and Unity Catalog"
+a. Zero-shot learning for text classification b. Explanation of the Natural Language Inference (NLI) method c. Code example of implementing zero-shot learning with the Databricks ML Runtime,"
+
+Zero-shot learning for text classification
+Zero-shot Learning (ZSL) refers to the task of predicting a class that wasn't seen by the model during training. It’s fair to note that the concept first appeared in 2008, fifteen years before ChatGPT. It has been intensively used in computer vision and then widely adopted in NLP. A common approach to ZSL includes computing embeddings and determining the semantic similarity between two embeddings.
+
+An alternative method to this, which has been used in the below example, is based on Natural Language Inference (NLI). This technique determines the compatibility of the two distinct sequences. Here, the input text will be semantically compared with each of the candidate labels, one by one.  For these comparisons, there is a starting hypothesis: that the label and the text are similar. The pipeline subsequently will determine if this hypothesis is true, false, or neutral. If the hypothesis is proven to be true, the label is relevant to the input text.
+
+Since we must compare all the candidate labels with the input text, the number of these comparisons increases linearly with the number of candidates, so we can quickly hit performance issues. However, the advantage resides in the method itself. All those comparisons are done during the inference. There is no training or fine-tuning specific to our task. There is no dependency between the model and the list of candidate labels. This is a huge advantage! If our use case evolves, or if we need to add new labels, remove or modify some of them, there is no impact on the model.
+
+from transformers import pipeline
+import torch
+
+# Determine if there is GPU or not
+device = torch.device(""cuda"" if torch.cuda.is_available() else ""cpu"")
+
+# Define the zeroshot pipeline
+model = ""facebook/bart-large-mnli""
+task = ""zero-shot-classification""
+zshot = pipeline(task=task, model=model)
+
+# Inference
+candidate_labels = ['sports',
+  'pop culture',
+  'breaking news',
+  'science and technology',
+  'politics',
+  'finance']
+
+inference_config = {'candidate_labels': candidate_labels, 'multi_label': False}
+input_text = ""Zinedine Zidane is the GOAT french football player""
+pred_label = zeroshot(input_text, candidate_labels, device=device)","Two efficient classification techniques, zero-shot learning and few-shot learning, for implementing large language models (LLMs) in Databricks, and demonstrates how to deploy and serve these models in production using MLflow and Unity Catalog"
+a. Registering and logging the zero-shot model with Unity Catalog b. Code example of registering the model with Unity Catalog,"
+
+Register and log your Model with Unity Catalog
+Now, we can register our model within Databricks Unity Catalog. By doing so, you will be able to centrally manage the entire lifecycle of your model, including access controls, lineage, and model discovery. You just need to define the catalog and the schema to register the model to.
+
+```
+import mlflow
+
+# Set unity catalog
+mlflow.set_registry_uri('databricks-uc')
+catalog = ""dev""
+schema = ""classif""
+
+# Log the model
+model_name = f""{catalog}.{schema}.zeroshot_model""
+mlflow.transformers.log_model(
+  transformers_model=zshot,
+  artifact_path='zeroshot_model',
+  registered_model_name=model_name,
+)
+```","Two efficient classification techniques, zero-shot learning and few-shot learning, for implementing large language models (LLMs) in Databricks, and demonstrates how to deploy and serve these models in production using MLflow and Unity Catalog"
+a. Few-shot learning classification b. Explanation of the two parts of the few-shot model c. Discussion on the balance between training time and overall performance,"
+
+Few-shot learning classification
+Thanks to zero-shot learning, you've successfully deployed your initial classification model into production within a short timeframe, suggesting prompt solutions for your business end-users. As you begin to receive their feedback,  it's evident that while the model is beneficial, some misclassifications has occurred during testing, as expected.
+
+You have been asked to improve your existing model, but budget and time constraints remain. The few-shot classification can help you here. In contrast to the previous solution, we will adapt the existing model with your data. However, the power of this method lies in the fact that you only need a few examples per label to fine-tune the model - some frameworks might even need less than 10 samples per label! This means that we are far from the extensive data requirements typically associated with training or fine-tuning LLMs.","Two efficient classification techniques, zero-shot learning and few-shot learning, for implementing large language models (LLMs) in Databricks, and demonstrates how to deploy and serve these models in production using MLflow and Unity Catalog"
+a. Preparing the data for few-shot learning b. Code example of preparing the data and splitting it into train and test datasets,"
+
+Prepare your data
+The first step is to prepare your data. As mentioned earlier, the method can work even with less than ten examples per label. So, even if you have 50 different labels, a dataset of 500 rows would be enough. The training time will be less than 5 minutes with a single CPU node of 32 GB!
+
+There is no magic number or hard limit. You can also increase the number of examples per label and evaluate if your model is more accurate. It’s a balance between the training time and the overall performance. But if you can expect a real improvement between 5 and 10 examples per label, there is no guarantee that more means better beyond, depending on how representative of your use case they are and the data you will have during inference.
+
+Testing the performance with 2 or 3 examples per label is also a good exercise. Is it better than zero-shot learning? What’s the improvement? Again, the training time is really low so that you can explore the behaviors. Beyond the number of training samples, their quality is key. 
+
+input_text_col = 'raw_text'
+output_label_col = 'category'
+
+df = spark.read.csv(f'/Volumes/{catalog}/{schema}/landing_zone/sample_classif_data.csv', header=True, sep=';') \
+         .withColumnRenamed(input_text_col, 'text') \
+         .withColumnRenamed(output_label_col, 'label') \
+         .select('text', 'label') \
+         .toPandas()
+          
+display(df)
+ 
+
+As we train a model, we have to provide a training and test dataset, so we split our data. 
+
+# Split train-test
+from sklearn.model_selection import train_test_split
+train_df, test_df = train_test_split(df, test_size=0.2, random_state=42)
+
+# Convert to dataset (expected input format)
+from datasets import Dataset, DatasetDict
+train_ds = Dataset.from_pandas(train_df)
+test_ds = Dataset.from_pandas(train_df)
+
+ds = DatasetDict()
+ds['train'] = train_ds
+ds['test'] = test_ds","Two efficient classification techniques, zero-shot learning and few-shot learning, for implementing large language models (LLMs) in Databricks, and demonstrates how to deploy and serve these models in production using MLflow and Unity Catalog"
+a. Training the few-shot model b. Code example of training the model with the SetFit library,"
+
+Train your model
+We can start training the model now that we have our train and test datasets. You will have to provide the sentence transformer, which will be the foundation of your few-shot model, and a few parameters, such as the batch size and the number of epochs. One epoch is often the default choice, as we have only a few input rows. As previously mentioned, the sentence transformer has already been pretrained, and we want to benefit from it. If we increase the number of epochs, it may have a negative effect on the performance.
+
+from setfit import SetFitModel, Trainer, TrainingArguments
+
+
+# Load sentence transformers from HugginFace
+hf_pretained_model = ""sentence-transformers/paraphrase-mpnet-base-v2""
+model = SetFitModel.from_pretrained(hf_pretained_model).to(device=device)
+
+# Set training arguments
+training_args = TrainingArguments(
+    batch_size=16,
+    num_epochs=1)
+
+# Create trainer
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_ds,
+    eval_dataset=test_ds,
+    metric='accuracy',
+)
+
+# Train
+trainer.train()","Two efficient classification techniques, zero-shot learning and few-shot learning, for implementing large language models (LLMs) in Databricks, and demonstrates how to deploy and serve these models in production using MLflow and Unity Catalog"
+a. Evaluating the few-shot model b. Code example of evaluating the model,"
+
+Evaluate your model
+The choice of the sentence transformer is essential and will impact the process's overall performance. Try several sentence transformers to evaluate the impact on your final model. A criteria could be the language of the corpus used to train the transformer. However, even if the open source community adds more and more models, there are still many more models in English today. Depending on your use case and your language, it may be a good idea to give a try to an English model and a good starting point to benchmark different models.
+
+# Evaluate
+metrics = trainer.evaluate()
+print(metrics['accuracy'])","Two efficient classification techniques, zero-shot learning and few-shot learning, for implementing large language models (LLMs) in Databricks, and demonstrates how to deploy and serve these models in production using MLflow and Unity Catalog"
+a. Logging the few-shot model with MLflow b. Code example of saving the model locally and defining a custom model with MLflow,"
+
+Log the model
+We first need to save locally the model in a temporary location.
+
+```
+# First, save the finetuned model locally
+model.save_pretrained('snapshot')
+```
+
+Then, we have to define a custom model with MLflow. Remember that we have two “sub-models”, the sentence transformer and the classifier, which is not the standard expected by MLflow. We could imagine storing each sub-model independently using their respective flavor (transformer and sklearn). Still, it would be less straightforward to infer at the end as we first need to encode our text and then provide the embeddings to the classification head to be classified.
+
+```
+from mlflow.pyfunc import PythonModel
+
+class SetFitCustomModel(PythonModel):
+  def load_context(self, context):
+    self.model = SetFitModel.from_pretrained(context.artifacts['snapshot'])
+
+  def predict(self, context, inputs):
+    return self.model(inputs['prompt'])
+```","Two efficient classification techniques, zero-shot learning and few-shot learning, for implementing large language models (LLMs) in Databricks, and demonstrates how to deploy and serve these models in production using MLflow and Unity Catalog"
+a. Performing ML inference with the few-shot model b. Code example of serving the model with Model Serving c. Code example of distributing the inference with Spark,"
+
+Performing ML Inference
+The next step is to deploy and serve your model to an endpoint so the model can be used for inference in real-time. We will use MLflow deployment to deploy to the Model Serving of Databricks.
+
+Serve the model with Model Serving
+The paraphrase-mpnet-base-v2 model we used above has +100M of parameters, far away from the 70B of LLama2 or 170B of GPT3. This means that the endpoint can be smaller and still have a low latency inference and a reduced cost.
+
+from mlflow.deployments import get_deploy_client
+
+client = get_deploy_client(""databricks"")
+
+
+endpoint_name = ""fewshot_setfit""
+version = ""1""
+
+endpoint = client.create_endpoint(
+    name=""fewshot-endpoint"",
+    config={
+        ""served_entities"": [
+            {
+                ""entity_name"": f""{catalog}.{schema}.{endpoint_name}"",
+                ""entity_version"": version,
+                ""workload_size"": ""Small"",
+                ""scale_to_zero_enabled"": ""true""
+            }
+        ],
+        ""traffic_config"": {
+            ""routes"": [
+                {
+                    ""served_model_name"": f""{model_name}-{version}"", 
+                    ""traffic_percentage"": 100
+                }
+            ]
+        }
+    }
+)
+
+Distribute your inference with Spark
+If the volume of your data increases, you will need to scale out the inference process. Using Spark and the Pandas UDFs, we can distribute the inference to all the available workers in your cluster. It’s fully compatible with the GPU, as we are not operating at the same level. We first use the pandas UDF to distribute the workload over several nodes. Then, each node will independently leverage its own GPU, if any. In short, you can combine the benefits of both the cluster distribution from Spark and the hardware behind the GPU with PyTorch.
+
+import pyspark.sql.types as T
+from typing import Iterator
+from pyspark.sql.functions import pandas_udf, col
+
+@pandas_udf(returnType=T.StringType())
+def predict_iterator(series: Iterator[pd.Series]) -> Iterator[pd.Series]:
+  
+  device = torch.device(""cuda"" if torch.cuda.is_available() else ""cpu"")
+
+  zshot = pipeline(
+    task=""zero-shot-classification"",
+    model=""facebook/bart-large-mnli"",
+    device=device
+  )
+
+  for s in series:
+      results = zshot(s.to_list(), candidate_labels=[
+                ""politics"",
+                ""finance"",
+                ""sports"",
+                ""science and technology"",
+                ""pop culture"",
+                ""breaking news"",
+            ], multi_label=False)
+      output = [result['labels'][0] for result in results]
+      yield pd.Series(output)
+
+
+display(df.select('texts', predict_iterator(col('texts'))))","Two efficient classification techniques, zero-shot learning and few-shot learning, for implementing large language models (LLMs) in Databricks, and demonstrates how to deploy and serve these models in production using MLflow and Unity Catalog"
+a. Querying the model into SQL with the AI Functions,"
+
+Query the model into SQL with the AI Functions
+This endpoint can be directly used in SQL, so data analysts and analytic engineers can use it in their analyses and queries. It fills the gap between data scientists and analysts and increases overall collaboration within the teams.
+
+SELECT text_col, ai_query(""fewshot-endpoint"",
+    text_col,
+    returnType => ""STRING""
+)","Two efficient classification techniques, zero-shot learning and few-shot learning, for implementing large language models (LLMs) in Databricks, and demonstrates how to deploy and serve these models in production using MLflow and Unity Catalog"
+a. Comparison of CPU and GPU for few-shot learning b. Discussion on the inference time and cost reduction with GPU,"
+
+""When starting to use a GPU, most people think it will cost more than a CPU. We have performed a benchmark using the previous few-shot classification model to compare the inference cost properly. The results are clear: GPU can accelerate the inference time and reduce the overall cost simultaneously. Splitting a dataset per batch of 500 rows, the inference time is reduced by 37x and the cost is reduced by a factor of 16! This comparison has been performed for a 500k rows dataset and 5 candidate labels. The GPU was a g5.2xlarge node and the CPU was a m5.xlarge node.""","Two efficient classification techniques, zero-shot learning and few-shot learning, for implementing large language models (LLMs) in Databricks, and demonstrates how to deploy and serve these models in production using MLflow and Unity Catalog"
+a. Conclusion on the benefits of using zero-shot and few-shot learning for NLP tasks b. Emphasis on the ease of deploying models in production with Databricks.,"
+
+In this article, we have explored two simple yet efficient classification techniques for implementing LLMs in Databricks. Zero-shot learning is the most straightforward approach without needing to train your model. You can leverage existing open source models and quickly deploy a zero-shot pipeline in production. Additionally, we have also seen the efficiency of the few-shot model being trained with only a few examples per label, utilizing open source models such as BERT. This approach tailors the model to your specific data, with the significant advantage of operating with a small portion of the dataset, thus minimizing training costs and complexity. Those two methods allow you to deploy models in production quickly, eliminating the uncertainties that slow down a project. If you have difficulties forecasting the ROI of a use case, these can be valuable methods to start before jumping into larger LLMs. Most importantly, we have seen that whichever technique you choose to build your model and deploy it into production, this journey would easily be achieved in Databricks. Leveraging the ready environment provided by the Databricks ML Runtime, the central governance solution of Unity Catalog, MLflow components with Model Serving and the AI functions will accelerate your path into production.","Two efficient classification techniques, zero-shot learning and few-shot learning, for implementing large language models (LLMs) in Databricks, and demonstrates how to deploy and serve these models in production using MLflow and Unity Catalog"
+"a. Introduction to the use of Large Language Models (LLMs) in healthcare, customer services, financial services, and more b. Explanation of the importance of NLP in parsing through unstructured documents c. Overview of the challenges of using public APIs for processing proprietary data","
+
+Natural Language Processing (NLP) has become a pivotal tool in healthcare, customer services, financial services, and more. NLP is especially useful in parsing through the vast expanses of unstructured documents. Traditionally, utilizing NLP has been a labor-intensive process of data cleansing and feature engineering. The landscape is shifting dramatically with the advent of Large Language Models (LLMs). What sets these models apart is their ability to extract metadata directly from unstructured medical records through prompt engineering, bypassing the conventional processes of feature extraction.","A scalable and secure approach to feature extraction from documents using Large Language Models (LLMs) on a Databricks cluster with Ray, enabling efficient and parallel processing of proprietary data."
+a. Explanation of Ray on Databricks and its benefits b. Diagram illustrating the use of Ray on Databricks c. Code example of setting up a Ray cluster on Databricks,"
+
+Ray is an open-source framework that simplifies the process of building and scaling distributed applications. At its core, Ray is designed to handle large-scale, high-performance computing tasks with ease. It provides a simple, flexible API for parallel and distributed computing, making it an ideal choice for applications that require significant computational power and scalability.
+
+ray-databricks.png
+
+Ray is now included as part of the Machine Learning Runtime (MLR) starting from version 15.0 onwards. If an older version of MLR has to be used, Ray can be installed as a python library. Ray runs seamlessly on Databricks clusters, enabling users to build secure and scalable ML products using Databricks Lakehouse. In the diagram above, a Ray dataset loads data from tables in Databricks Lakehouse. The dataset is processed in parallel by actors running on worker nodes of a Databricks cluster. The details of running the actors are defined in the map_batches method. The extracted features can be written out to a table in Lakehouse and ready to be used by ML or reporting applications downstream.
+
+Set up a Ray cluster
+from ray.util.spark import setup_ray_cluster, shutdown_ray_cluster
+
+GPUS_PER_NODE = 4
+NUM_OF_WORKER_NODES = 8
+
+setup_ray_cluster(
+  num_cpus_worker_node=1,
+  num_gpus_per_node = GPUS_PER_NODE,
+  max_worker_nodes = NUM_OF_WORKER_NODES,
+  num_cpus_head_node=1,
+  collect_log_to_path=""/dbfs/tmp/raylogs"",
+)","A scalable and secure approach to feature extraction from documents using Large Language Models (LLMs) on a Databricks cluster with Ray, enabling efficient and parallel processing of proprietary data."
+"a. Implementation of text summarization using LLMs on Databricks b. Code example of creating a TextSummarizer actor class c. Explanation of the three summarization approaches: Stuff, MapReduce, and Refine","
+
+Implementation
+This blog post presents a text summarization example, demonstrating the applicability of LLMs in natural language processing tasks. The summarization task is scaled up using Ray on Databricks. However, the approach outlined is not limited to text summarization. The approach enables seamless adaptation to various feature extraction use cases, highlighting the potential of LLMs in extracting valuable insights from unstructured data across diverse applications.
+
+class TextSummarizer:
+
+    def __init__(self,checkpoint=""meta-llama/Meta-Llama-3-8B-Instruct"", verbose=False):
+      # Initialize the tokenizer and model on each worker
+      print(""Initialize the tokenizer and model on each worker"")
+      self.checkpoint = checkpoint
+      self.access_token = 'your hf token retrieved from secret scope'
+      self.tokenizer = AutoTokenizer.from_pretrained(self.checkpoint, trust_remote_code=True, token=self.access_token)
+      self.device = torch.device(""cuda"" if torch.cuda.is_available() else ""cpu"")
+      self.model = None
+      gpu_ids = ray.get_gpu_ids()
+      print(f""allocated gpu ids: {gpu_ids}"")
+      self.verbose = verbose
+
+    def _create_model(self):
+      if self.model: return
+      self.model = AutoModelForCausalLM.from_pretrained(
+          self.checkpoint,
+          torch_dtype=torch.float16, 
+          trust_remote_code=True,
+          device_map=""auto"",
+          token=self.access_token
+      )
+      self.model.eval()
+   ...
+    def __call__(self, batch: Dict[str, np.ndarray]) -> Dict[str, list]:
+      import time
+      self._create_model()
+      summeries = []
+      durs = []
+      for note in list(batch[""reporttext""]):
+        #   print(note)
+        start_time = time.time()    
+        # pred = self.process_note(note)
+        # pred = self.process_note_refine(note)
+        pred = self.process_note_no_chunking(note)
+        if self.verbose: print(f""### Final summary: {pred}"")
+        summeries.append(pred)
+        end_time = time.time()
+        dur = end_time - start_time
+        durs.append(dur)
+      batch[""summarized_text""] = summeries
+      batch[""dur""] = durs
+      return batch","A scalable and secure approach to feature extraction from documents using Large Language Models (LLMs) on a Databricks cluster with Ray, enabling efficient and parallel processing of proprietary data."
+a. Creating a Ray dataset and processing it using map_batches b. Code example of creating a Ray dataset and processing it using map_batches c. Discussion of the batch_size parameter and its impact on memory usage and performance,"
+
+Create Ray Dataset
+Ray datasets can be created from parquet files or tables in Unity Catalog. The notebooks attached contain code examples for creating parquet files from the current version of a Delta Lake table. A Ray dataset can read from the parquet files and call map_batches() to distribute and process the dataset on worker nodes.
+
+ray_res = ray.cluster_resources()
+num_gpus_per_actor = 4
+worker_num = int(ray_res['GPU']/num_gpus_per_actor)
+print(f""### The number of workers: {worker_num}"")
+
+summarized_ds = ds.map_batches(
+  TextSummarizer,
+  concurrency=worker_num,
+  num_gpus=num_gpus_per_actor,
+  batch_size=(ds.count()//worker_num)
+)
+summarized_pdf = summarized_ds.to_pandas()
+The code snippet above first computes the number of actors the Ray cluster actually has. In this example, there is one actor per worker node, so the worker_num is the number of actors. The number of actors is safer to be computed at runtime because sometimes the cluster may not be able to acquire the hard-coded number of workers. If this happens, Ray will keep trying to wait for enough resources and the actors will not be running.
+
+The batch_size parameter controls the number of records assigned to an actor. In the code example, the whole dataset is evenly divided by the number of actors. Adjusting the batch size allows users to balance between memory usage and performance.
+
+Watch out for the warning messages like: Warning: The following resource request cannot be scheduled right now: {'CPU': 1.0, 'GPU': 4.0}. This is likely due to all cluster resources being claimed by actors. Consider creating fewer actors or adding more nodes to this Ray cluster. Review the cluster resources from setup_ray_cluster and check if actor resources specified in map_batches can fit in.","A scalable and secure approach to feature extraction from documents using Large Language Models (LLMs) on a Databricks cluster with Ray, enabling efficient and parallel processing of proprietary data."
+a. Discussion of the benefits of using Ray on Databricks for feature extraction from documents b. Explanation of the use of Databricks Lakehouse for storing and managing documents c. Code example of writing extracted features to Delta tables for downstream use,"This blog post presents a scalable, secure and efficient approach to feature extraction from documents leveraging Large Language Models (LLMs). By harnessing the power of Ray on a Databricks cluster, feature extraction tasks are distributed and executed in parallel, ensuring high-performance processing. Documents are stored in the Databricks Lakehouse, providing a centralized and managed data repository, and are loaded into a Ray dataset for processing. The extracted features can then be written to Delta tables, enabling seamless integration with downstream reporting and machine learning applications. This approach demonstrates a streamlined and scalable solution for feature extraction, empowering data scientists and engineers to extract valuable insights from large document collections. Notebooks can be downloaded here.","A scalable and secure approach to feature extraction from documents using Large Language Models (LLMs) on a Databricks cluster with Ray, enabling efficient and parallel processing of proprietary data."
+"a. Conclusion on the scalability, security, and efficiency of using LLMs on Databricks for feature extraction b. Link to download notebooks with examples.","This blog post presents a scalable, secure and efficient approach to feature extraction from documents leveraging Large Language Models (LLMs). By harnessing the power of Ray on a Databricks cluster, feature extraction tasks are distributed and executed in parallel, ensuring high-performance processing. Documents are stored in the Databricks Lakehouse, providing a centralized and managed data repository, and are loaded into a Ray dataset for processing. The extracted features can then be written to Delta tables, enabling seamless integration with downstream reporting and machine learning applications. This approach demonstrates a streamlined and scalable solution for feature extraction, empowering data scientists and engineers to extract valuable insights from large document collections. Notebooks can be downloaded here.","A scalable and secure approach to feature extraction from documents using Large Language Models (LLMs) on a Databricks cluster with Ray, enabling efficient and parallel processing of proprietary data. "
+a. Understanding billable usage in Databricks Model Serving a. Model and Feature Serving b. Foundation Model APIs (Provisioned Throughput) c. Foundation Model APIs (Pay-per-Token),"Databricks Model Serving now includes three distinct pricing methods. Regardless of the method you choose, the price is inclusive of all cloud infrastructure costs. The three different methods are covered briefly here:
+
+Model and Feature Serving: Choose a compute type (CPU/GPU) and a size that corresponds to a range of concurrent requests that the endpoint can handle. The serverless endpoint will scale seamlessly within this range and you pay for the actual compute allocated. If “scale to zero” is enabled, a $.07 charge per launch is incurred (max 2/hour).
+Foundation Model APIs (Provisioned Throughput): For large language model use cases that require consistent, low latency responses with high concurrency. It provides dedicated compute that scales between a configured set range. Databricks only charges for the actual compute used.
+Foundation Model APIs (Pay-per-Token): Choose one of the available state-of-the-art Foundation Models and query it directly. Customers pay only for the input and output tokens consumed and produced by the model.","The pricing model and cost monitoring for Databricks Model Serving, a scalable and low-latency hosting service for AI models."
+"a. Tracking model serving costs in Databricks a. Using the billable usage system table b. Querying the system.billing.usage table
+c. Querying and visualizing Model Serving usage","The best way to track model servings costs in Databricks is through the billable usage system table. Once enabled, the table automatically populates with the latest usage in your Databricks account. No matter which of the three model serving methods you choose, your costs will appear in the system.billing.usage table with column sku_name as either:
+
+<tier>_SERVERLESS_REAL_TIME_INFERENCE_LAUNCH_<region>
+
+which includes all DBUs accrued when an endpoint starts after scaling to zero. All other model serving costs are grouped under: 
+
+<tier>_SERVERLESS_REAL_TIME_INFERENCE_<region>
+
+where tier corresponds to your Databricks platform tier and region corresponds to the cloud region of your Databricks deployment.","The pricing model and cost monitoring for Databricks Model Serving, a scalable and low-latency hosting service for AI models."
+a. a. Example query to aggregate model serving DBUs per day b. Visualizing the results c.Cost attribution with custom tags,"
+
+Querying and visualizing Model Serving usage
+You can easily query the system.billing.usage table to aggregate all DBUs (Databricks Units) associated with Databricks model serving. Here is an example query that aggregates model serving DBUs per day for the last 30 days:
+
+ 
+
+ 
+
+SELECT
+
+ SUM(usage_quantity) AS model_serving_dbus,
+
+ usage_date
+
+FROM
+
+ system.billing.usage
+
+WHERE
+
+ sku_name LIKE '%SERVERLESS_REAL_TIME_INFERENCE%'
+
+GROUP BY(usage_date)
+
+ORDER BY
+
+ usage_date DESC
+
+LIMIT 30
+ 
+
+ 
+
+Model Serving DBUs per Day For Last 30 Days","The pricing model and cost monitoring for Databricks Model Serving, a scalable and low-latency hosting service for AI models."
+a. a. Applying custom tags to Databricks Model Serving endpoints b. Querying costs based on custom tags c. Visualizing costs based on custom tags,"Cost attribution with custom tags
+Aggregated costs may be sufficient for simple use cases, but as the number of endpoints grows it is desirable to break out costs based on use case, business unit, or other custom identifiers. Optional key/value tags can be applied to custom models endpoints. All custom tags applied to Databricks Model Serving endpoints propagate to the system.billing.usage table under the custom_tags column and can be used to aggregate and visualize costs. Databricks recommends adding descriptive tags to each endpoint for precise cost tracking.
+
+Applying Custom Tags
+Applying Custom Tags
+
+Below is an example query that separates model serving costs by values of a specific tag for the Databricks account over the last 30 days.
+
+ 
+
+ 
+
+SELECT
+
+ value,
+
+ SUM(usage_quantity) AS DBUs
+
+FROM
+
+ (
+
+   SELECT
+
+     usage_date,
+
+     usage_quantity,
+
+     -- Use the built in EXPLODE() function to create a new row per tag.
+
+     EXPLODE(custom_tags)
+
+   FROM
+
+     system.billing.usage
+
+   WHERE
+
+     sku_name LIKE '%SERVERLESS_REAL_TIME_INFERENCE%'
+
+     AND usage_date > DATE_SUB(CURRENT_DATE(), 30)
+
+   ORDER BY
+
+     usage_date DESC
+
+ )
+
+WHERE
+
+ key = {{ filter_key }}
+
+GROUP BY
+
+ value
+
+ORDER BY
+
+ DBUs DESC
+ 
+
+ 
+
+Running the query in the Databricks SQL Editor breaks out model serving costs by value of the tag over the past month:
+
+DBUs by Endpoint Owner Over Past 30 Days
+DBUs by Endpoint Owner Over Past 30 Days","The pricing model and cost monitoring for Databricks Model Serving, a scalable and low-latency hosting service for AI models."
+a. Conclusion: The potential for further exploration and visualization in Databricks,This is just the start of what you can view and visualize using the system.billing.usage tables in Databricks! Stay tuned as Databricks plans to roll out additional tables and metrics within the system catalog.,"The pricing model and cost monitoring for Databricks Model Serving, a scalable and low-latency hosting service for AI models."
+"a. Introduction to aligning large language models (LLMs) 
+    a. Explanation of the importance of aligning LLMs with user intent 
+    b. Example of a customer support chatbot that needs to be aligned with company policies","Alignment of large language models (LLM) is a critical topic when building production-ready models for industrial use cases. An aligned model understands and complies with the user’s intent. Take a customer support chatbot as an example. Pre-training a model on a large corpus of text may allow the model to generate a coherent text following an input. However, this model is not aligned, since we expect the model to behave as an experienced customer support agent, who follows policies and best practices defined for customer service in the company. We need to fine-tune the model using an instruction-following dataset that consists of many question-and-answer pairs to show the model what experienced customer support agents usually answer in different situations. This process is called supervised fine-tuning. Many models available today are already fine-tuned in this way, and that’s why models like Llama-2-70b-chat-hf and gpt-3.5-turbo-instruct answer your questions right off the bat.","The alignment of large language models (LLMs) for real world use cases, using a fine-tuned LLM as a reward model to eliminate the need for human labelers and enable efficient alignment"
+"a. Reinforcement Learning from Human Feedback (RLHF) 
+    a. Explanation of the RLHF process 
+    b. Problem: High cost and operational complexity of collecting human feedback 
+    c. Solution: Using a pre-trained or fine-tuned LLM as a reward model","Reinforcement Learning from Human Feedback (RLHF)
+In this approach, we prepare a dataset that contains millions of input and output pairs. An important thing to note is that, for each input, we need multiple outputs. Labelers will then rank these outputs based on how well they align with the use case. This dataset is then used to train a reward model, which is often yet another LLM. After the training, the reward model should be able to assign a score to a generated text, indicating how well it aligns with what you, as a user, want to achieve. We use this model during the fine-tuning process (between the forward and the back propagations) to score the texts generated by the target model and compute the reward. Proximal policy optimization (PPO) is a popular algorithm that can be used here. It will then take this reward and update the model weights to maximize the reward. Under the right conditions, we can assume that the reward increase is associated with the better alignment of the model.
+
+Noticeably, the problem with this approach is that it requires high-quality human labelers to rank millions of outputs. This is an expensive operation by itself, which also inflicts many operational complications. This has been the bottleneck of this technique, preventing it from being widely adopted by industrial use cases.","The alignment of large language models (LLMs) for real world use cases, using a fine-tuned LLM as a reward model to eliminate the need for human labelers and enable efficient alignment"
+"a. Reinforcement Learning from AI Feedback (RLAIF) 
+    a. Explanation of the RLAIF architecture 
+        -Example: Vegetarian chatbot use case 
+    b. Description of the components of the RLAIF architecture 
+    c. Discussion of the benefits and limitations of the RLAIF approach","
+
+In this article, we propose a solution that uses a powerful LLM as a reward model inspired by the preceding work. The use of an off-the-shelf LLM as a reward function allows us to omit the manual work of collecting millions of ranked outputs from human labelers and training a reward model. The architecture we present provides access to the reward model from within the training loop, in which the reward model generates scores after each batch forward propagation. These scores are then used to calculate the reward, which the PPO algorithm maximizes as per the discussion above. At the core of the architecture is the low latency, high throughput serverless model serving feature of Databricks Model Serving. Alternatively, users can prepare the comparison dataset offline using a pre-trained or a fine-tuned LLM, which can then be used by the DPO algorithm to directly optimize the preference.","The alignment of large language models (LLMs) for real world use cases, using a fine-tuned LLM as a reward model to eliminate the need for human labelers and enable efficient alignment"
+"a. Prompt Generation 
+    a. Explanation of how to generate prompts for the target model 
+        -Example: Using Llama-2-70b-chat-hf to generate 10k prompts","
+
+Prompt Generation
+We used Llama-2-70b-chat-hf  to generate 10k prompts before fine-tuning. This can be done either offline in batches or online using Databricks Model Serving. Foundation Model APIs, which give easy access to various powerful models, can be leveraged here.
+
+TOPICS = [""Nutritious"", ""Plant-Based"", ""Meal Planning"", ""Cooking Techniques"", ""Vegetarianism"",...]
+
+SYSTEM_PROMPT = f""""""
+ You are an AI assistant that specializes in food. Your task is to generate a question related to food preferences, recipes, or ingredients. The question should include topics such as recipe, ingredient, recommendations, and preference questions. Generate 1 question based on the topics provided in the instructions. Do not generate more than 1 question.
+
+  Below is an example of a question. Always format the output in JSON format as follows:
+ ```json
+ {{
+   ""question"": ""What are some ingredients for a quick dinner preparation?""
+ }}
+ ``` """"""
+
+QUESTION_START = ""Give me a question related to the following topic:""","The alignment of large language models (LLMs) for real world use cases, using a fine-tuned LLM as a reward model to eliminate the need for human labelers and enable efficient alignment"
+"a. Target Model 
+    a. Explanation of the target model used in the vegetarian chatbot use case 
+    b. Discussion of the choice of model and potential alternatives","
+
+Target Model
+We fine-tuned Llama-2-7b-chat-hf. Depending on the capacity of the computing infrastructure, different open-source models of varying sizes can be used as the target model. This model was specifically chosen to demonstrate the solution with a relatively modest compute resource.","The alignment of large language models (LLMs) for real world use cases, using a fine-tuned LLM as a reward model to eliminate the need for human labelers and enable efficient alignment"
+"a. Reward Model 
+    a. Explanation of the reward model used in the vegetarian chatbot use case 
+    b. Discussion of the choice of model and potential alternatives 
+        - Example: Prompt for scoring texts using Llama-2-70b-chat-hf","
+
+We used Llama-2-70b-chat-hf as the reward model. In contrast to the target model that is loaded into your local environment, the reward model is hosted on Databricks Model Serving. Therefore, the underlying infrastructure is managed by Databricks providing optimized performance with robust security and governance features. We only need to provide the expected throughput in terms of the number of tokens that will be generated per unit time. This number should increase as the batch size in the training loop increases. Similar to the target model, other open-source models or proprietary models can be used here as well. An important requirement here is that the model is capable of accurately scoring the texts. This is the most critical assumption in the entire solution and we encourage you to run a thorough analysis when adapting this solution to your use case.
+
+def prompt_score(text):
+ return f""""""[INST]<<SYS>>You are an AI assistant that specializes in vegetarian cuisine. Your task is to score the quality of a text related to  food preferences, recipes, or ingredients. Generate 1 score on a scale from 0.01 to 0.99, which indicates how good the text provided in the instruction is. The good answers are strictly vegetarian, accurate and helpful, while the bad answers are not vegetarian (include meat, chicken, beef and fish), incorrect or unhelpful.
+
+  Below is an example of a good text with score 0.99 and a bad text with score 0.01.
+
+  - Good text with score 0.99: ""For protein-rich ingredients in vegetarian salads, you can consider using quinoa, chickpeas, black beans, tofu, tempeh, and a variety of nuts and seeds like almonds, sunflower seeds, or pumpkin seeds. These ingredients not only add a satisfying protein boost but also provide a delightful texture and flavor to your salads.""
+
+ - Bad text with score 0.01: ""You can add some sliced deli meats like turkey or chicken for protein. They are light and won't overpower the taste of your salad. Plus, they're easy to prepare and add to any salad mix. Fish is also a great alternative.""
+
+ Give the score at the beginning. Give only the score. Use no more than 10 words.<</SYS>>
+ text: {text} [/INST]""""""","The alignment of large language models (LLMs) for real world use cases, using a fine-tuned LLM as a reward model to eliminate the need for human labelers and enable efficient alignment"
+"a. TRL PPO Trainer 
+    a. Explanation of the TRL PPO Trainer used in the vegetarian chatbot use case 
+    b. Discussion of the choice of trainer and potential alternatives","TRL PPO Trainer
+We utilized the PPO implementation from the TRL library - an open-source framework developed by Hugging Face. Additionally, LoRA was used to reduce GPU memory requirements during the fine-tuning. PPO requires two copies of the target model, but when combined with LoRA, only one copy is effectively needed, which reduces the memory footprint significantly. TRL is integrated with Accelerate, and DeepSpeed, which has a native integration with Databricks, was used to achieve parallelism and optimize resource utilization. 
+
+The actual training was done on a single node cluster with 8 x A10G (24GB GPU memory), which is a sufficient setup for a 7B parameter model to be fine-tuned. When fine-tuning a larger model  (e.g. Llama-2-13b-chat-hf, mpt-30b), we recommend using more powerful instances with a larger memory size like A100 GPU or even potentially on a multi-node setting. See the code for the detailed implementation.","The alignment of large language models (LLMs) for real world use cases, using a fine-tuned LLM as a reward model to eliminate the need for human labelers and enable efficient alignment"
+"a. Model Serving 
+    a. Explanation of how the reward model is deployed using Databricks Model Serving 
+    b. Discussion of the choice of serving infrastructure and potential alternatives","
+
+Model Serving
+As briefly explained, we deployed the Llama-2-70b-chat-hf model behind a Databricks Model Serving endpoint with an expected throughput of 635 tokens generated per second, which we use as a reward model. In our setup, we prompt the model to evaluate responses by assigning them a score within a 0.01 to 0.99 range. This scoring range is designed to mirror the likelihood of a response being considered high-quality. Subsequently, we apply the logit function, defined as math.log(score/(1.0-score)), to transform these scores. This transformation effectively maps the model-generated probabilities to the entire real number continuum, extending from negative to positive infinity. This approach enhances our ability to distinguish outstanding responses more clearly and apply appropriate penalties to inferior ones.
+
+For example, this approach allows us to penalize the model for generating mediocre texts below a score 0.5 (and vice versa for those above 0.5) and place more weights on texts with scores closer to the extremes, which is merely a mathematical trick we used to accelerate the convergence of fine-tuning. See the details of the implementation here.","The alignment of large language models (LLMs) for real world use cases, using a fine-tuned LLM as a reward model to eliminate the need for human labelers and enable efficient alignment"
+"a. Key Metrics 
+    a. Explanation of the key metrics to track during training 
+        - Example: Time evolution of the key training metrics","Time evolution of the key training metrics: solid lines are smoothed data points.
+
+The key metrics to pay attention to during the training are: (1) the mean reward, (2) the reward standard deviation, and (3) the KL divergence. If the mean reward increases and eventually converges over time, this indicates that the model generates high-quality texts with higher scores. For the same reason, the standard deviation of the mean reward should decrease and converge over time. The KL divergence usually increases rapidly at the beginning of the training, indicating the target model is drifting away from its original weights but should eventually converge. We observed all these behaviors in the training for our use case.
+
+We used tensorboard to track these metrics in real time during the training. It’s also essential to store the combination of a prompt, a generated text, and a score to inspect that the model behaves as expected during the training. In Databricks Model Serving, all requests to and responses from the model can be automatically captured and logged in a Delta Lake table.","The alignment of large language models (LLMs) for real world use cases, using a fine-tuned LLM as a reward model to eliminate the need for human labelers and enable efficient alignment"
+"a. Evaluation 
+    a. Explanation of how to evaluate the fine-tuned model 
+         - Example: Comparison of the pre-fine-tuned and post-fine-tuned models","Evaluation
+Evaluation is the second most crucial step in the entire solution, with the validation of the reward model being number one. In this use case, we kept 100 prompts as a hold-out evaluation set, which we refrained from using for fine-tuning. We then fed these prompts to both the original and fine-tuned models and compared the quality of the outputs. We observed that 43 texts generated by the original (pre-fine-tuned) model contained non-vegetarian contents, whereas this number was down to 30 for the fine-tuned (see the notebook) model. We achieved nearly 30% improvement in the alignment quality, which indicates this solution's feasibility. The fine-tuned model is not perfect, but further improvements could be made by (1) revising the prompt to produce more accurate scores, (2) increasing the number and the variety of the training prompts, (3) increasing the number of training epochs, (4) testing different LLMs as the reward model.
+
+<left image> <right image>
+
+Samples of outputs generated by the pre-fine-tuning (left) and the post-fine-tuning (right) models","The alignment of large language models (LLMs) for real world use cases, using a fine-tuned LLM as a reward model to eliminate the need for human labelers and enable efficient alignment"
+"a. Inference 
+    a. Explanation of how to deploy the fine-tuned model for real-time inference 
+    b. Discussion of the choice of inference infrastructure and potential alternatives","
+
+After we evaluated the fine-tuned model, we deployed it behind a real-time endpoint and made it available for a downstream application. Databricks Model Serving provides optimized inference for large open-source models like Llama2. The deployment is straightforward using an API  (see this notebook) or UI.","The alignment of large language models (LLMs) for real world use cases, using a fine-tuned LLM as a reward model to eliminate the need for human labelers and enable efficient alignment"
+"a. Wrap Up 
+    a. Supervised fine-tuning of large language models (LLMs) may not be enough for production-ready models
+    b. Reinforcement learning is a common method for LLM alignment but has challenges
+    c. The article introduces a solution that eliminates the need for manual labor in collecting ranked outputs, making reinforcement learning more accessible","
+
+Aligning LLM is a crucial topic when building production-ready models. A supervised fine-tuned model is often not sufficient, and we need to further tune it for our specific requirements. Reinforcement learning is often used, but this requires human labelers to rank millions of outputs, which is, for many companies, cost-prohibitive and operationally complex. In this article, we proposed a solution that uses a pre-trained or fine-tuned LLM as a reward model that eliminates the manual labor of collecting millions of ranked outputs from human labelers. This solution will enable many companies previously struggling to justify the high cost of labeling and avoid getting into operational complications to align their LLMs efficiently.","The alignment of large language models (LLMs) for real world use cases, using a fine-tuned LLM as a reward model to eliminate the need for human labelers and enable efficient alignment"

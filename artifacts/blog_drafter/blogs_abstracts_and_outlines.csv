@@ -1,0 +1,2211 @@
+Abstract,Outline,Topic,Blog
+"The tutorial focuses on making certain applyInPandas operations faster in Spark. The example uses dummy data with 5 million rows, 100 devices, and 1,000 trips. The tutorial explains that applyInPandas can be used to process data by specific keys, like devices and trips. However, applyInPandas may take longer than expected for small volumes of data due to serialization with PyArrow. The tutorial suggests that combining Spark's custom aggregator with applyInPandas and traditional Pandas custom aggregator can improve performance. The example demonstrates this by processing each device_id group in parallel, then aggregating further on the trip_id. This approach is faster than using applyInPandas for both device_id and trip_id. The tutorial notes that this approach may not be suitable if the trip_id group grows too large to fit in memory or if the entire dataset shrinks significantly. The balance between distributed processing and in-memory processing depends on the size and structure of the data.","1a. Introduction to the approach of making certain applyInPandas operations faster 
+b. Explanation of generating dummy data for the example using Spark 
+c. Code for generating the initial dataframe with specified number of rows, devices, and trips
+2a. Traditional approach of using applyInPandas for applying Pandas operations to groups within a Spark dataframe 
+b. Code for applying a custom normalization function to groups of devices and trips 
+c. Explanation of the time taken for completion of the traditional approach
+3a. Explanation of the issue with the traditional approach when groupings are too large to fit in memory 
+b. Code for calculating the average number of rows per device and trip
+4a. Improved approach combining Spark’s custom aggregator with traditional Pandas custom aggregator 
+b. Code for normalizing device and trip data using the improved approach 
+c. Explanation of the time taken for completion of the improved approach
+5a. Comparison of the traditional and improved approaches 
+b. Discussion on the balance between distributed processing and in-memory processing 
+c. Suggestion for further testing with different sizes of data to determine the optimal approach.","This tutorial demonstrates how to significantly speed up certain applyInPandas operations in Spark by combining Spark's custom aggregator with Pandas custom aggregator, resulting in faster processing times for specific data groupings.","In this short tutorial, we’ll implement an approach to making certain applyInPandas operations run many times faster. First, let's generate some dummy data for this example using Spark. For our example, we’ll create a function that returns a dataframe with the specified number of rows, devices, and trips. In this case, we’ll create five million rows for 100 devices that take 1,000 trips each, with some random “sensor_reading” data to process. If we paste this into Databricks, it should take just a moment to run:
+
+ 
+
+from pyspark.sql.functions import rand
+import pandas as pd
+
+def generate_initial_df(num_rows, num_devices, num_trips):
+   return (
+       spark.range(num_rows)
+       .withColumn('device_id', (rand()*num_devices).cast('int'))
+       .withColumn('trip_id', (rand()*num_trips).cast('int'))
+       .withColumn('sensor_reading', (rand()*1000))
+       .drop('id')
+   )
+
+df = generate_initial_df(5000000, 100, 1000)
+df.display()
+ 
+
+Typically, to apply Pandas operations to groups within a Spark dataframe, we’d use applyInPandas like below. This can be helpful when you have a requirement to process data by some specific key(s), such as the groups of devices and trips. We could run custom aggregations on certain groups, or normalization per device and trip like in the example below:
+
+ 
+
+def normalize_device_and_trip(pdf: pd.DataFrame) -> pd.DataFrame:
+  reading = pdf.sensor_reading
+  pdf['normalized_reading'] = reading.mean() / reading.std()
+  return pdf
+
+expected_schema = 'device_id int, trip_id int, sensor_reading long, normalized_reading long'
+df.groupBy('device_id', 'trip_id').applyInPandas(normalize_device_and_trip, expected_schema).display()
+ 
+
+Unfortunately, this may take more time to complete than expected given the small volume of data (roughly a little over a minute, depending on your cluster). In the background, Spark is using PyArrow to serialize each group into a Pandas dataframe and run the computation you defined on each group in parallel across the cluster. This is fine when you have a lot of data in each group. However, in this case, we know we have very few rows per group - just fifty rows per trip on average but fifty thousand per device_id:
+
+ 
+
+print(df.count() / df.select('device_id').distinct().count()) # 50,000
+print(df.count() / df.select('device_id', 'trip_id').distinct().count()) # ~50
+ 
+
+When our groupings are too large to fit in memory for traditional Pandas to process, applyInPandas gives us an approach for distributing the groups of data across the cluster. This might help with our broader dataset containing many millions of rows, but isn't necessary if the grouping produces significantly less data volume than that. We get the best of in-memory processing and distributed processing by combining Spark’s custom aggregator, applyInPandas, with the traditional Pandas custom aggregator. In this example we’ll process each device_id group in parallel (distributed and serialized), then aggregate further on the trip_id (not distributed or serialized further):
+
+ 
+
+def normalize_trip(pdf: pd.DataFrame) -> pd.DataFrame:
+  reading = pdf.sensor_reading
+  pdf['normalized_reading'] = reading.mean() / reading.std()
+  return pdf
+
+def normalize_device(pdf: pd.DataFrame) -> pd.DataFrame:
+   return pdf.groupby('trip_id').apply(normalize_trip)
+
+expected_schema = 'device_id int, trip_id int, sensor_reading long, normalized_reading long'
+df.groupBy('device_id').applyInPandas(normalize_device, expected_schema).display()
+ 
+
+This approach should run much more quickly (roughly three times faster, depending on the cluster). Note that applyInPandas still provides distributed processing for our larger group, while the simple Pandas apply provides aggregation for our smaller group. If the trip_id group suddenly grew too large to fit in memory, we’d face potential out of memory errors. If the size of the entire dataset suddenly shrank, we’d be incurring the cost of invoking Arrow more than necessary. Feel free to generate different sizes of data to see which groupings work better or worse. The balance may be tough to strike, but if you know your data extremely well and it won’t change dramatically over time, the combined grouping approaches can significantly improve performance and cost savings for your data processing."
+"This article discusses two simple yet efficient classification techniques for implementing large language models (LLMs) in Databricks: zero-shot learning and few-shot learning. The authors demonstrate how to use these techniques to create text classification models with minimal training data and without requiring a GPU. They provide code examples for implementing these techniques in Databricks, as well as a comparison of CPU and GPU performance. The authors also highlight the benefits of using Databricks for implementing these techniques, including the ready environment provided by the Databricks ML Runtime, the central governance solution of Unity Catalog, MLflow components with Model Serving and the AI functions. The article concludes by emphasizing the value of these techniques for quickly deploying models in production and minimizing training costs and complexity. The article is well-organized and easy to follow, with clear explanations and relevant code examples.","1a. Introduction to Natural Language Processing (NLP) techniques and their benefits b. Explanation of using NLP techniques without the need for large foundational models (GenAI) c. Overview of the techniques that will be explored in the article
+2a. Text classification as a common NLP task b. Explanation of zero-shot learning and few-shot learning for text classification c. Discussion on the advantages of using these techniques
+3a. Zero-shot learning for text classification b. Explanation of the Natural Language Inference (NLI) method c. Code example of implementing zero-shot learning with the Databricks ML Runtime
+4a. Registering and logging the zero-shot model with Unity Catalog b. Code example of registering the model with Unity Catalog
+5a. Few-shot learning classification b. Explanation of the two parts of the few-shot model c. Discussion on the balance between training time and overall performance
+6a. Preparing the data for few-shot learning b. Code example of preparing the data and splitting it into train and test datasets
+7a. Training the few-shot model b. Code example of training the model with the SetFit library
+8a. Evaluating the few-shot model b. Code example of evaluating the model
+9a. Logging the few-shot model with MLflow b. Code example of saving the model locally and defining a custom model with MLflow
+10a. Performing ML inference with the few-shot model b. Code example of serving the model with Model Serving c. Code example of distributing the inference with Spark
+11a. Querying the model into SQL with the AI Functions
+12a. Comparison of CPU and GPU for few-shot learning b. Discussion on the inference time and cost reduction with GPU
+13a. Conclusion on the benefits of using zero-shot and few-shot learning for NLP tasks b. Emphasis on the ease of deploying models in production with Databricks.","This blog post discusses the use of Natural Language Processing (NLP) techniques with large language models (LLMs) for text classification tasks, such as sentiment analysis and translation","Introduction
+The GenAI boom has been very beneficial, as it has brought to light numerous use cases that can leverage Natural Language Processing (NLP) techniques. NLP represents a field in AI that consists of several machine learning algorithms that analyze and understand human language and generate text with content similar to what humans would do. GenAI is not a necessity for NLP. You can still gain significant results through NLP techniques that do not require large foundational models associated with GenAI use cases. These use cases can be developed quickly with just a few lines of code at a really low cost while still reaching a fair level of performance and leverage open source models.
+
+In this article, we’ll explore some techniques that will enable you to develop popular NLP tasks such as text classification, sentiment analysis, and translation, using large language models (LLMs), with tens or hundreds of millions of parameters. The best part is you do not even need a GPU. If you have access to one GPU, it will most probably accelerate the execution, but it’s not mandatory. Additionally, you don’t need to install any library as everything is already installed into your Databricks ML Runtime. The MLflow components and the transformers library from HuggingFace will be the main ingredients of your recipe.
+
+Table of Contents
+
+Introduction
+Text Classification with NLP
+Zero-shot learning for text classification
+Implementing ZSL with the Databricks ML Runtime
+Register and log your Model with Unity Catalog
+Few-shot learning classification
+Prepare your data
+Train your model
+Evaluate your model
+Log the model
+Performing ML Inference
+Serve the model with Model Serving
+Distribute your inference with Spark
+Query the model into SQL with the AI Functions
+CPU vs GPU
+Conclusion
+ 
+
+Text Classification with NLP
+A common task in NLP is text classification - where we assign labels to our text. This improves the evaluation and post-analysis steps, by allowing us to organize our raw texts into a set of metadata categories. Attaching these metadata to our text significantly facilitates key information extraction. Several methods to help accomplish this task include zero-shot classification or few-shot classification.
+
+Zero-shot learning for text classification
+Zero-shot Learning (ZSL) refers to the task of predicting a class that wasn't seen by the model during training. It’s fair to note that the concept first appeared in 2008, fifteen years before ChatGPT. It has been intensively used in computer vision and then widely adopted in NLP. A common approach to ZSL includes computing embeddings and determining the semantic similarity between two embeddings.
+
+An alternative method to this, which has been used in the below example, is based on Natural Language Inference (NLI). This technique determines the compatibility of the two distinct sequences. Here, the input text will be semantically compared with each of the candidate labels, one by one.  For these comparisons, there is a starting hypothesis: that the label and the text are similar. The pipeline subsequently will determine if this hypothesis is true, false, or neutral. If the hypothesis is proven to be true, the label is relevant to the input text.
+
+Since we must compare all the candidate labels with the input text, the number of these comparisons increases linearly with the number of candidates, so we can quickly hit performance issues. However, the advantage resides in the method itself. All those comparisons are done during the inference. There is no training or fine-tuning specific to our task. There is no dependency between the model and the list of candidate labels. This is a huge advantage! If our use case evolves, or if we need to add new labels, remove or modify some of them, there is no impact on the model.
+
+While prompt engineering enables the use of LLMs, comparable results can be attained with these two methods designed for the classification task. These techniques are particularly beneficial for the risk-averse or those encountering challenges with more advanced methods, offering a quick initial iteration, feedback collection, and establishing solid foundations for further exploration. Lastly, both of them rely on smaller LLMs, reducing infrastructure requirements and costs.  
+
+Implementing ZSL with the Databricks ML Runtime
+Now, let’s look at how we can easily use such a model. We will leverage the transformers library from HuggingFace, which has already been installed in your Databricks ML Runtime. We will also use PyTorch to determine if there is a GPU available. The same piece of code can be used in both cases. You can expect better performance using a single GPU (see below for a deeper analysis).
+
+We will leverage the transformers library and the models' hub from HuggingFace. The bart-large-mnli model has been made available by Facebook, applying the NLI method to the pre-trained BART model.
+
+ 
+
+from transformers import pipeline
+import torch
+
+# Determine if there is GPU or not
+device = torch.device(""cuda"" if torch.cuda.is_available() else ""cpu"")
+
+# Define the zeroshot pipeline
+model = ""facebook/bart-large-mnli""
+task = ""zero-shot-classification""
+zshot = pipeline(task=task, model=model)
+
+# Inference
+candidate_labels = ['sports',
+  'pop culture',
+  'breaking news',
+  'science and technology',
+  'politics',
+  'finance']
+
+inference_config = {'candidate_labels': candidate_labels, 'multi_label': False}
+input_text = ""Zinedine Zidane is the GOAT french football player""
+pred_label = zeroshot(input_text, candidate_labels, device=device)
+ 
+
+Register and log your Model with Unity Catalog
+Now, we can register our model within Databricks Unity Catalog. By doing so, you will be able to centrally manage the entire lifecycle of your model, including access controls, lineage, and model discovery. You just need to define the catalog and the schema to register the model to.
+
+ 
+
+import mlflow
+
+# Set unity catalog
+mlflow.set_registry_uri('databricks-uc')
+catalog = ""dev""
+schema = ""classif""
+
+# Log the model
+model_name = f""{catalog}.{schema}.zeroshot_model""
+mlflow.transformers.log_model(
+  transformers_model=zshot,
+  artifact_path='zeroshot_model',
+  registered_model_name=model_name,
+)
+ 
+
+Few-shot learning classification
+Thanks to zero-shot learning, you've successfully deployed your initial classification model into production within a short timeframe, suggesting prompt solutions for your business end-users. As you begin to receive their feedback,  it's evident that while the model is beneficial, some misclassifications has occurred during testing, as expected.
+
+You have been asked to improve your existing model, but budget and time constraints remain. The few-shot classification can help you here. In contrast to the previous solution, we will adapt the existing model with your data. However, the power of this method lies in the fact that you only need a few examples per label to fine-tune the model - some frameworks might even need less than 10 samples per label! This means that we are far from the extensive data requirements typically associated with training or fine-tuning LLMs. 
+
+In this example, if we break down the few-shot model, we'll discover two 'sub-models'.
+
+The first part is a sentence transformer. It is based on an already trained model and often derived from BERT (such as RoBERTa or DistilBERT for example), which has been trained on a substantial corpus of 800M words (Book Corpus) and 2500M words (English Wikipedia). The objective of the fine-tuning process is to update the weights of such a model slightly to have a better representation of your input data. This sentence transformer will encode our raw input texts and create embeddings, serving as inputs for the second part of the few-shot model, which is the classification head.
+This classification head will be fitted using your training data. Going further with SetFit, the two steps (1- Fine tuning of a sentence transformer, 2 - training of a classification head) are packed together and are transparent for the user.
+In the end, you end up training a few-shot model.
+
+qtldb_0-1715852736923.png
+
+Note!
+
+Two choices are possible between the sub-models. We could have an additional layer on top of the architecture of the sentence transformer or a completely different model. A library such as SetFit allows you to choose between those two approaches depending on your needs. For example, you can use a traditional logistic regression model from scikit-learn as the classification head. It can be an advantage if you want to leverage the ecosystem around scikit-learn and dig deeper into the explainability.
+
+
+
+Prepare your data
+The first step is to prepare your data. As mentioned earlier, the method can work even with less than ten examples per label. So, even if you have 50 different labels, a dataset of 500 rows would be enough. The training time will be less than 5 minutes with a single CPU node of 32 GB!
+
+There is no magic number or hard limit. You can also increase the number of examples per label and evaluate if your model is more accurate. It’s a balance between the training time and the overall performance. But if you can expect a real improvement between 5 and 10 examples per label, there is no guarantee that more means better beyond, depending on how representative of your use case they are and the data you will have during inference.
+
+Testing the performance with 2 or 3 examples per label is also a good exercise. Is it better than zero-shot learning? What’s the improvement? Again, the training time is really low so that you can explore the behaviors. Beyond the number of training samples, their quality is key. 
+
+ 
+
+input_text_col = 'raw_text'
+output_label_col = 'category'
+
+df = spark.read.csv(f'/Volumes/{catalog}/{schema}/landing_zone/sample_classif_data.csv', header=True, sep=';') \
+          .withColumnRenamed(input_text_col, 'text') \
+          .withColumnRenamed(output_label_col, 'label') \
+          .select('text', 'label') \
+          .toPandas()
+          
+display(df)
+ 
+
+As we train a model, we have to provide a training and test dataset, so we split our data. 
+
+ 
+
+# Split train-test
+from sklearn.model_selection import train_test_split
+train_df, test_df = train_test_split(df, test_size=0.2, random_state=42)
+
+# Convert to dataset (expected input format)
+from datasets import Dataset, DatasetDict
+train_ds = Dataset.from_pandas(train_df)
+test_ds = Dataset.from_pandas(train_df)
+
+ds = DatasetDict()
+ds['train'] = train_ds
+ds['test'] = test_ds
+ 
+
+Note: the best practice would be to add a validation dataset as well, which is not performed here to simplify the process
+
+
+Train your model
+We can start training the model now that we have our train and test datasets. You will have to provide the sentence transformer, which will be the foundation of your few-shot model, and a few parameters, such as the batch size and the number of epochs. One epoch is often the default choice, as we have only a few input rows. As previously mentioned, the sentence transformer has already been pretrained, and we want to benefit from it. If we increase the number of epochs, it may have a negative effect on the performance.
+
+ 
+
+from setfit import SetFitModel, Trainer, TrainingArguments
+
+
+# Load sentence transformers from HugginFace
+hf_pretained_model = ""sentence-transformers/paraphrase-mpnet-base-v2""
+model = SetFitModel.from_pretrained(hf_pretained_model).to(device=device)
+
+# Set training arguments
+training_args = TrainingArguments(
+    batch_size=16,
+    num_epochs=1)
+
+# Create trainer
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_ds,
+    eval_dataset=test_ds,
+    metric='accuracy',
+)
+
+# Train
+trainer.train()
+ 
+
+Evaluate your model
+The choice of the sentence transformer is essential and will impact the process's overall performance. Try several sentence transformers to evaluate the impact on your final model. A criteria could be the language of the corpus used to train the transformer. However, even if the open source community adds more and more models, there are still many more models in English today. Depending on your use case and your language, it may be a good idea to give a try to an English model and a good starting point to benchmark different models.
+
+ 
+
+# Evaluate
+metrics = trainer.evaluate()
+print(metrics['accuracy'])
+ 
+
+Log the model
+We first need to save locally the model in a temporary location.
+
+ 
+
+# First, save the finetuned model locally
+model.save_pretrained('snapshot')
+ 
+
+Then, we have to define a custom model with MLflow. Remember that we have two “sub-models”, the sentence transformer and the classifier, which is not the standard expected by MLflow. We could imagine storing each sub-model independently using their respective flavor (transformer and sklearn). Still, it would be less straightforward to infer at the end as we first need to encode our text and then provide the embeddings to the classification head to be classified.
+
+ 
+
+from mlflow.pyfunc import PythonModel
+
+class SetFitCustomModel(PythonModel):
+  def load_context(self, context):
+    self.model = SetFitModel.from_pretrained(context.artifacts['snapshot'])
+
+  def predict(self, context, inputs):
+    return self.model(inputs['prompt'])
+ 
+
+The next step is to create the signature of our model. The model takes a string as input and produces another string (corresponding to the label) as the output. 
+
+ 
+
+from mlflow.models.signature import ModelSignature
+from mlflow.types import DataType, Schema, ColSpec
+
+# Define input and output schema
+input_schema = Schema([ColSpec(DataType.string, ""prompt""),])
+output_schema = Schema([ColSpec(DataType.string, ""text"")])
+
+#Define signature
+signature = ModelSignature(inputs=input_schema, outputs=output_schema)
+ 
+
+Now, the model can be registered within Unity Catalog using MLflow. As we have a custom model, we use the pyfunc flavor.
+
+ 
+
+mlflow.set_registry_uri('databricks-uc')
+
+with mlflow.start_run() as run:
+
+  model_details = mlflow.pyfunc.log_model(
+    registered_model_name=f'{catalog}.{schema}.fewshot_setfit',
+    artifacts={'snapshot': 'snapshot'},
+    artifact_path=""setfit_model"",
+    python_model=SetFitCustomModel(),
+    pip_requirements=[
+      ""setfit==1.0.3"",
+      ""transformers"",
+      ""sentence-transformers""
+    ],
+    signature=signature
+  )
+ 
+
+Performing ML Inference
+The next step is to deploy and serve your model to an endpoint so the model can be used for inference in real-time. We will use MLflow deployment to deploy to the Model Serving of Databricks. 
+
+Serve the model with Model Serving
+The paraphrase-mpnet-base-v2 model we used above has +100M of parameters, far away from the 70B of LLama2 or 170B of GPT3. This means that the endpoint can be smaller and still have a low latency inference and a reduced cost.
+
+ 
+
+from mlflow.deployments import get_deploy_client
+
+client = get_deploy_client(""databricks"")
+
+
+endpoint_name = ""fewshot_setfit""
+version = ""1""
+
+endpoint = client.create_endpoint(
+    name=""fewshot-endpoint"",
+    config={
+        ""served_entities"": [
+            {
+                ""entity_name"": f""{catalog}.{schema}.{endpoint_name}"",
+                ""entity_version"": version,
+                ""workload_size"": ""Small"",
+                ""scale_to_zero_enabled"": ""true""
+            }
+        ],
+        ""traffic_config"": {
+            ""routes"": [
+                {
+                    ""served_model_name"": f""{model_name}-{version}"", 
+                    ""traffic_percentage"": 100
+                }
+            ]
+        }
+    }
+)
+ 
+
+Distribute your inference with Spark
+If the volume of your data increases, you will need to scale out the inference process. Using Spark and the Pandas UDFs, we can distribute the inference to all the available workers in your cluster. It’s fully compatible with the GPU, as we are not operating at the same level. We first use the pandas UDF to distribute the workload over several nodes. Then, each node will independently leverage its own GPU, if any. In short, you can combine the benefits of both the cluster distribution from Spark and the hardware behind the GPU with PyTorch.
+
+In the following example, we use an Iterator to Iterator pandas UDF to load the model only once per node and increase the overall performance.
+
+ 
+
+import pyspark.sql.types as T
+from typing import Iterator
+from pyspark.sql.functions import pandas_udf, col
+
+@pandas_udf(returnType=T.StringType())
+def predict_iterator(series: Iterator[pd.Series]) -> Iterator[pd.Series]:
+  
+  device = torch.device(""cuda"" if torch.cuda.is_available() else ""cpu"")
+
+  zshot = pipeline(
+    task=""zero-shot-classification"",
+    model=""facebook/bart-large-mnli"",
+    device=device
+  )
+
+  for s in series:
+      results = zshot(s.to_list(), candidate_labels=[
+                ""politics"",
+                ""finance"",
+                ""sports"",
+                ""science and technology"",
+                ""pop culture"",
+                ""breaking news"",
+            ], multi_label=False)
+      output = [result['labels'][0] for result in results]
+      yield pd.Series(output)
+
+
+display(df.select('texts', predict_iterator(col('texts'))))
+ 
+
+Query the model into SQL with the AI Functions
+This endpoint can be directly used in SQL, so data analysts and analytic engineers can use it in their analyses and queries. It fills the gap between data scientists and analysts and increases overall collaboration within the teams.
+
+ 
+
+SELECT text_col, ai_query(""fewshot-endpoint"",
+    text_col,
+    returnType => ""STRING""
+)
+ 
+
+CPU vs GPU
+When starting to use a GPU, most people think it will cost more than a CPU. We have performed a benchmark using the previous few-shot classification model to compare the inference cost properly. The results are clear: GPU can accelerate the inference time and reduce the overall cost simultaneously. Splitting a dataset per batch of 500 rows, the inference time is reduced by 37x and the cost is reduced by a factor of 16! This comparison has been performed for a 500k rows dataset and 5 candidate labels. The GPU was a g5.2xlarge node and the CPU was a m5.xlarge node.
+
+
+qtldb_1-1715853268667.png	qtldb_3-1715853311795.png
+
+Thanks to the ML Runtime within Databricks, you can switch between CPU and GPU without changing your configuration. The runtime handles everything, and you can seamlessly transition to GPU.
+
+
+Conclusion
+In this article, we have explored two simple yet efficient classification techniques for implementing LLMs in Databricks. Zero-shot learning is the most straightforward approach without needing to train your model. You can leverage existing open source models and quickly deploy a zero-shot pipeline in production. Additionally, we have also seen the efficiency of the few-shot model being trained with only a few examples per label, utilizing open source models such as BERT. This approach tailors the model to your specific data, with the significant advantage of operating with a small portion of the dataset, thus minimizing training costs and complexity. Those two methods allow you to deploy models in production quickly, eliminating the uncertainties that slow down a project. If you have difficulties forecasting the ROI of a use case, these can be valuable methods to start before jumping into larger LLMs.
+
+Most importantly, we have seen that whichever technique you choose to build your model and deploy it into production, this journey would easily be achieved in Databricks. Leveraging the ready environment provided by the Databricks ML Runtime, the central governance solution of Unity Catalog, MLflow components with Model Serving and the AI functions will accelerate your path into production."
+"This article discusses the use of Large Language Models (LLMs) for feature extraction from documents in a scalable, secure, and efficient manner using Ray on Databricks. The approach is demonstrated through a text summarization example, showcasing the potential of LLMs in extracting valuable insights from unstructured data. The blog post highlights the importance of utilizing GPU clusters for processing proprietary data, such as medical records and financial reports, while ensuring data privacy and security. The implementation of a TextSummarizer actor class using Ray on Databricks is presented, along with three summarization methods: Stuff, MapReduce, and Refine. The article also discusses the creation of Ray datasets from parquet files or tables in Unity Catalog and the distribution of computation across multiple nodes or processes. The blog post concludes by emphasizing the streamlined and scalable solution for feature extraction, enabling data scientists and engineers to extract valuable insights from large document collections. The notebooks with examples can be downloaded here.","1a. Introduction to the use of Large Language Models (LLMs) in healthcare, customer services, financial services, and more b. Explanation of the importance of NLP in parsing through unstructured documents c. Overview of the challenges of using public APIs for processing proprietary data
+2a. Explanation of Ray on Databricks and its benefits b. Diagram illustrating the use of Ray on Databricks c. Code example of setting up a Ray cluster on Databricks
+3a. Implementation of text summarization using LLMs on Databricks b. Code example of creating a TextSummarizer actor class c. Explanation of the three summarization approaches: Stuff, MapReduce, and Refine
+4a. Creating a Ray dataset and processing it using map_batches b. Code example of creating a Ray dataset and processing it using map_batches c. Discussion of the batch_size parameter and its impact on memory usage and performance
+5a. Discussion of the benefits of using Ray on Databricks for feature extraction from documents b. Explanation of the use of Databricks Lakehouse for storing and managing documents c. Code example of writing extracted features to Delta tables for downstream use
+6a. Conclusion on the scalability, security, and efficiency of using LLMs on Databricks for feature extraction b. Link to download notebooks with examples.",Utilizing Large Language Models and Ray on Databricks for Scalable Feature Extraction from Proprietary Documents.,"Introduction
+Natural Language Processing (NLP) has become a pivotal tool in healthcare, customer services, financial services, and more. NLP is especially useful in parsing through the vast expanses of unstructured documents. Traditionally, utilizing NLP has been a labor-intensive process of data cleansing and feature engineering. The landscape is shifting dramatically with the advent of Large Language Models (LLMs). What sets these models apart is their ability to extract metadata directly from unstructured medical records through prompt engineering, bypassing the conventional processes of feature extraction. 
+
+When working with proprietary data, it's important to note that public APIs may not be a suitable solution due to the sensitive nature of the information. Proprietary data often contains Personally Identifiable Information (PII) or Protected Health Information (PHI), which requires strict privacy and security controls. Using public APIs could potentially expose this sensitive information to unauthorized parties, compromising confidentiality and putting individuals at risk. 
+
+Databricks Lakehouse provides a secure and scalable platform for processing proprietary data (e.g. medical records) using GPU clusters. In this blog, a scalable approach is presented for feature extraction from documents using  state-of-the-art open LLMs via Ray on Databricks. Notebooks with examples in this blog can be downloaded here.
+
+Understanding Ray on Databricks 
+Ray is an open-source framework that simplifies the process of building and scaling distributed applications. At its core, Ray is designed to handle large-scale, high-performance computing tasks with ease. It provides a simple, flexible API for parallel and distributed computing, making it an ideal choice for applications that require significant computational power and scalability.
+
+ray-databricks.png
+
+Ray is now included as part of the Machine Learning Runtime (MLR) starting from version 15.0 onwards. If an older version of MLR has to be used, Ray can be installed as a python library. Ray runs seamlessly on Databricks clusters, enabling users to build secure and scalable ML products using Databricks Lakehouse. In the diagram above, a Ray dataset loads data from tables in Databricks Lakehouse. The dataset is processed in parallel by actors running on worker nodes of a Databricks cluster. The details of running the actors are defined in the map_batches method. The extracted features can be written out to a table in Lakehouse and ready to be used by ML or reporting applications downstream.
+
+Implementation
+This blog post presents a text summarization example, demonstrating the applicability of LLMs in natural language processing tasks. The summarization task is scaled up using Ray on Databricks. However, the approach outlined is not limited to text summarization. The approach enables seamless adaptation to various feature extraction use cases, highlighting the potential of LLMs in extracting valuable insights from unstructured data across diverse applications.
+
+Set up a Ray cluster
+from ray.util.spark import setup_ray_cluster, shutdown_ray_cluster
+
+GPUS_PER_NODE = 4
+NUM_OF_WORKER_NODES = 8
+
+setup_ray_cluster(
+  num_cpus_worker_node=1,
+  num_gpus_per_node = GPUS_PER_NODE,
+  max_worker_nodes = NUM_OF_WORKER_NODES,
+  num_cpus_head_node=1,
+  collect_log_to_path=""/dbfs/tmp/raylogs"",
+)
+A Databricks GPU cluster of eight worker nodes is created with the worker type as Standard_NC64as_T4_v3. In the code example above, a Ray cluster is configured to have 8 worker nodes with 4 GPUs on each worker. Ray recommends setting spark.task.resource.gpu.amount to 0 so that Spark jobs do not reserve GPU resources, preventing Ray-on-Spark workloads from having the maximum number of GPUs available. To run large models (e.g. DBRX or 70b models), it is recommended to change the default Hugging Face cache location to local_disk0, which has more space to download the model artifacts.
+HF_HOME=/local_disk0/hf
+HF_DATASETS_CACHE=/local_disk0/hf
+TRANSFORMERS_CACHE=/local_disk0/hf
+The values can be configured from Cluster Configuration -> Advanced options -> Spark.
+Run LLM Inference 
+A TextSummarizer actor class is implemented for utilizing a LLM to summarize proprietary text such as medical records, financial reports, etc. Actors will be instantiated on worker nodes based upon the resource requirements of each actor and the resource available on the worker nodes. In the Ray cluster created in this example, there are 4 GPUs per worker node and an actor will utilize all 4 GPUs to load a DBRX model. Therefore one actor will be created on each worker node.
+
+class TextSummarizer:
+
+    def __init__(self,checkpoint=""meta-llama/Meta-Llama-3-8B-Instruct"", verbose=False):
+      # Initialize the tokenizer and model on each worker
+      print(""Initialize the tokenizer and model on each worker"")
+      self.checkpoint = checkpoint
+      self.access_token = 'your hf token retrieved from secret scope'
+      self.tokenizer = AutoTokenizer.from_pretrained(self.checkpoint, trust_remote_code=True, token=self.access_token)
+      self.device = torch.device(""cuda"" if torch.cuda.is_available() else ""cpu"")
+      self.model = None
+      gpu_ids = ray.get_gpu_ids()
+      print(f""allocated gpu ids: {gpu_ids}"")
+      self.verbose = verbose
+
+    def _create_model(self):
+      if self.model: return
+      self.model = AutoModelForCausalLM.from_pretrained(
+          self.checkpoint,
+          torch_dtype=torch.float16, 
+          trust_remote_code=True,
+          device_map=""auto"",
+          token=self.access_token
+      )
+      self.model.eval()
+    ...
+    def __call__(self, batch: Dict[str, np.ndarray]) -> Dict[str, list]:
+      import time
+      self._create_model()
+      summeries = []
+      durs = []
+      for note in list(batch[""reporttext""]):
+        #   print(note)
+        start_time = time.time()    
+        # pred = self.process_note(note)
+        # pred = self.process_note_refine(note)
+        pred = self.process_note_no_chunking(note)
+        if self.verbose: print(f""### Final summary: {pred}"")
+        summeries.append(pred)
+        end_time = time.time()
+        dur = end_time - start_time
+        durs.append(dur)
+      batch[""summarized_text""] = summeries
+      batch[""dur""] = durs
+      return batch
+The actor class downloads and instantiates the tokenizer and model from Hugging Face. The tokenizer and other member variables are initialized in __init__(). However the model itself is created in the __call__ just before the data batches are processed. This is because downloading a large model (e.g. 70b models) will timeout the actor creation. 
+
+When you call map_batches on a Ray Dataset, Ray will serialize the data batches using Apache Arrow and transfer them to the worker nodes for processing. The worker nodes will then deserialize the data batches. The deserialized data will be passed to the __call__ method in the actor class in the format of Dict[str, np.ndarray]. If a pandas dataframe is preferred, batch_format can be set to ""pandas"" in the map_batches method of a Ray dataset and passed to the __call__ method.
+
+Summarization Approaches
+The context window in Large Language Models (LLMs) refers to the amount of text (number of tokens) the model can consider at any given time when making predictions or generating text. Given the limitation on context, several approaches can be taken for summarizing long articles.
+
+Stuff: Involves stuffing as much text as possible into the context window of the model to maximize the amount of information processed in one go. It typically involves clever use of the text by prioritizing the most informative parts or condensing the text through techniques like removing less important information or rephrasing to make it more concise. This can be followed by processing the condensed text to create a summary. The Stuff method aims to leverage the limited context window effectively by focusing on the most crucial parts of the text.
+
+MapReduce: Involves dividing the long text into smaller chunks that fit within the model's context window. Each chunk is processed (or ""mapped"") independently to generate a summary or a meaningful representation of that section. These intermediate summaries are then combined (or ""reduced"") to produce a final summary of the entire text. This method is useful for parallel processing and handling very large documents efficiently.
+
+Refine: Focuses on iteratively improving the summary of a text. Initially, a rough summary is created for the entire text, possibly by first summarizing smaller sections and combining those summaries. This initial summary is then used as a new, shorter input for the model to refine and improve in subsequent iterations. By refining the summary iteratively, the model can improve the accuracy and coherence of the final output. This approach is beneficial when dealing with complex texts that require a deeper understanding and more nuanced summarization.
+The three methods have been implemented in the TextSummaries actor class. More improvements can be done around the chunking and prompt engineering based upon specific requirements. With Databricks MLR, you can install open source libraries such as LangChain or LlamaIndex to implement a summarization method with them.
+Create Ray Dataset
+Ray datasets can be created from parquet files or tables in Unity Catalog. The notebooks attached contain code examples for creating parquet files from the current version of a Delta Lake table. A Ray dataset can read from the parquet files and call map_batches() to distribute and process the dataset on worker nodes.
+
+The map_batches method applies a specified function or a callable class to each batch of records in the dataset. This approach leverages Ray's ability to distribute computation across multiple nodes or processes, making it highly efficient for large datasets. Unlike a typical map function that processes each item individually, map_batches handles a batch of items at once, which can be more efficient in terms of both computation and I/O operations. Then the transformed batches are combined to form the output dataset.
+
+ray_res = ray.cluster_resources()
+num_gpus_per_actor = 4
+worker_num = int(ray_res['GPU']/num_gpus_per_actor)
+print(f""### The number of workers: {worker_num}"")
+
+summarized_ds = ds.map_batches(
+  TextSummarizer,
+  concurrency=worker_num,
+  num_gpus=num_gpus_per_actor,
+  batch_size=(ds.count()//worker_num)
+)
+summarized_pdf = summarized_ds.to_pandas()
+The code snippet above first computes the number of actors the Ray cluster actually has. In this example, there is one actor per worker node, so the worker_num is the number of actors. The number of actors is safer to be computed at runtime because sometimes the cluster may not be able to acquire the hard-coded number of workers. If this happens, Ray will keep trying to wait for enough resources and the actors will not be running.
+
+The batch_size parameter controls the number of records assigned to an actor. In the code example, the whole dataset is evenly divided by the number of actors. Adjusting the batch size allows users to balance between memory usage and performance.
+
+Watch out for the warning messages like: Warning: The following resource request cannot be scheduled right now: {'CPU': 1.0, 'GPU': 4.0}. This is likely due to all cluster resources being claimed by actors. Consider creating fewer actors or adding more nodes to this Ray cluster. Review the cluster resources from setup_ray_cluster and check if actor resources specified in map_batches can fit in.
+
+Discussion
+This blog post presents a scalable, secure and efficient approach to feature extraction from documents leveraging Large Language Models (LLMs). By harnessing the power of Ray on a Databricks cluster, feature extraction tasks are distributed and executed in parallel, ensuring high-performance processing. Documents are stored in the Databricks Lakehouse, providing a centralized and managed data repository, and are loaded into a Ray dataset for processing. The extracted features can then be written to Delta tables, enabling seamless integration with downstream reporting and machine learning applications. This approach demonstrates a streamlined and scalable solution for feature extraction, empowering data scientists and engineers to extract valuable insights from large document collections. Notebooks can be downloaded here."
+"Databricks Model Serving offers a scalable, low-latency hosting service for AI models, supporting small custom models to large language models (LLMs). Three pricing methods are available: Model and Feature Serving (CPU/GPU), Foundation Model APIs (Provisioned Throughput), and Foundation Model APIs (Pay-per-Token). Costs can be tracked using the billable usage system table, specifically the 'system.billing.usage' table, which includes all DBUs associated with Databricks model serving. An example query is provided to aggregate model serving DBUs per day for the last 30 days. For precise cost tracking, Databricks recommends applying optional key/value tags to custom models endpoints. These tags propagate to the 'custom_tags' column in the 'system.billing.usage' table and can be used to aggregate and visualize costs. An example query is provided to separate model serving costs by values of a specific tag for the Databricks account over the last 30 days. Databricks plans to roll out additional tables and metrics within the system catalog for more detailed tracking and visualization.","1. Understanding billable usage in Databricks Model Serving a. Model and Feature Serving b. Foundation Model APIs (Provisioned Throughput) c. Foundation Model APIs (Pay-per-Token)
+2. Tracking model serving costs in Databricks a. Using the billable usage system table b. Querying the system.billing.usage table
+c. Querying and visualizing Model Serving usage 
+3. a. Example query to aggregate model serving DBUs per day b. Visualizing the results c.Cost attribution with custom tags 
+4. a. Applying custom tags to Databricks Model Serving endpoints b. Querying costs based on custom tags c. Visualizing costs based on custom tags
+5. Conclusion: The potential for further exploration and visualization in Databricks",Understanding and Managing Costs for Databricks Model Serving with Custom Tags and Usage Data,"Databricks Model Serving provides a scalable, low-latency hosting service for AI models. It supports models ranging from small custom models to best-in-class large language models (LLMs). In this blog we’ll describe the pricing model associated with Databricks Model Serving and demonstrate how to allocate costs per endpoint or per use case.
+
+Understanding billable usage
+Databricks Model Serving now includes three distinct pricing methods. Regardless of the method you choose, the price is inclusive of all cloud infrastructure costs. The three different methods are covered briefly here:
+
+Model and Feature Serving: Choose a compute type (CPU/GPU) and a size that corresponds to a range of concurrent requests that the endpoint can handle. The serverless endpoint will scale seamlessly within this range and you pay for the actual compute allocated. If “scale to zero” is enabled, a $.07 charge per launch is incurred (max 2/hour).
+Foundation Model APIs (Provisioned Throughput): For large language model use cases that require consistent, low latency responses with high concurrency. It provides dedicated compute that scales between a configured set range. Databricks only charges for the actual compute used.
+Foundation Model APIs (Pay-per-Token): Choose one of the available state-of-the-art Foundation Models and query it directly. Customers pay only for the input and output tokens consumed and produced by the model.
+The best way to track model servings costs in Databricks is through the billable usage system table. Once enabled, the table automatically populates with the latest usage in your Databricks account. No matter which of the three model serving methods you choose, your costs will appear in the system.billing.usage table with column sku_name as either:
+
+<tier>_SERVERLESS_REAL_TIME_INFERENCE_LAUNCH_<region>
+
+which includes all DBUs accrued when an endpoint starts after scaling to zero. All other model serving costs are grouped under: 
+
+<tier>_SERVERLESS_REAL_TIME_INFERENCE_<region>
+
+where tier corresponds to your Databricks platform tier and region corresponds to the cloud region of your Databricks deployment. 
+
+Querying and visualizing Model Serving usage
+You can easily query the system.billing.usage table to aggregate all DBUs (Databricks Units) associated with Databricks model serving. Here is an example query that aggregates model serving DBUs per day for the last 30 days:
+
+ 
+
+ 
+
+SELECT
+
+ SUM(usage_quantity) AS model_serving_dbus,
+
+ usage_date
+
+FROM
+
+ system.billing.usage
+
+WHERE
+
+ sku_name LIKE '%SERVERLESS_REAL_TIME_INFERENCE%'
+
+GROUP BY(usage_date)
+
+ORDER BY
+
+ usage_date DESC
+
+LIMIT 30
+ 
+
+ 
+
+Model Serving DBUs per Day For Last 30 Days
+Model Serving DBUs per Day For Last 30 Days
+
+Cost attribution with custom tags
+Aggregated costs may be sufficient for simple use cases, but as the number of endpoints grows it is desirable to break out costs based on use case, business unit, or other custom identifiers. Optional key/value tags can be applied to custom models endpoints. All custom tags applied to Databricks Model Serving endpoints propagate to the system.billing.usage table under the custom_tags column and can be used to aggregate and visualize costs. Databricks recommends adding descriptive tags to each endpoint for precise cost tracking.
+
+Applying Custom Tags
+Applying Custom Tags
+
+Below is an example query that separates model serving costs by values of a specific tag for the Databricks account over the last 30 days.
+
+ 
+
+ 
+
+SELECT
+
+ value,
+
+ SUM(usage_quantity) AS DBUs
+
+FROM
+
+ (
+
+   SELECT
+
+     usage_date,
+
+     usage_quantity,
+
+     -- Use the built in EXPLODE() function to create a new row per tag.
+
+     EXPLODE(custom_tags)
+
+   FROM
+
+     system.billing.usage
+
+   WHERE
+
+     sku_name LIKE '%SERVERLESS_REAL_TIME_INFERENCE%'
+
+     AND usage_date > DATE_SUB(CURRENT_DATE(), 30)
+
+   ORDER BY
+
+     usage_date DESC
+
+ )
+
+WHERE
+
+ key = {{ filter_key }}
+
+GROUP BY
+
+ value
+
+ORDER BY
+
+ DBUs DESC
+ 
+
+ 
+
+Running the query in the Databricks SQL Editor breaks out model serving costs by value of the tag over the past month:
+
+DBUs by Endpoint Owner Over Past 30 Days
+DBUs by Endpoint Owner Over Past 30 Days
+
+Conclusion
+This is just the start of what you can view and visualize using the system.billing.usage tables in Databricks! Stay tuned as Databricks plans to roll out additional tables and metrics within the system catalog."
+"Large language models (LLMs) need to be aligned to understand and comply with user intent, especially in customer-facing applications with specific requirements. Reinforcement learning from human feedback (RLHF) is a technique for aligning LLMs, but it requires high-quality human labelers to rank millions of outputs, which can be expensive and operationally complex. Reinforcement learning from AI feedback (RLAIF) is a proposed solution that uses a powerful LLM as a reward model, eliminating the need for manual labor and allowing for efficient alignment of LLMs. The architecture for RLAIF includes a target model, a reward model, and a PPO algorithm, with the reward model hosted on Databricks Model Serving for optimized performance and robust security and governance features. A use case of a vegetarian chatbot was presented to demonstrate the feasibility of the RLAIF solution, with a 30% improvement in alignment quality observed after fine-tuning. Evaluation is crucial in the RLAIF solution, with the validation of the reward model being the most important step, followed by the evaluation of the fine-tuned model. Inference can be performed using Databricks Model Serving, which provides optimized inference for large open-source models like Llama2. The RLAIF solution will enable many companies to align their LLMs efficiently, without the need for high-cost labeling and operational complications.","1. Introduction to aligning large language models (LLMs) 
+    a. Explanation of the importance of aligning LLMs with user intent 
+    b. Example of a customer support chatbot that needs to be aligned with company policies
+2. Reinforcement Learning from Human Feedback (RLHF) 
+    a. Explanation of the RLHF process 
+    b. Problem: High cost and operational complexity of collecting human feedback 
+    c. Solution: Using a pre-trained or fine-tuned LLM as a reward model
+3. Reinforcement Learning from AI Feedback (RLAIF) 
+    a. Explanation of the RLAIF architecture 
+        -Example: Vegetarian chatbot use case 
+    b. Description of the components of the RLAIF architecture 
+    c. Discussion of the benefits and limitations of the RLAIF approach
+4. Prompt Generation 
+    a. Explanation of how to generate prompts for the target model 
+        -Example: Using Llama-2-70b-chat-hf to generate 10k prompts
+5. Target Model 
+    a. Explanation of the target model used in the vegetarian chatbot use case 
+    b. Discussion of the choice of model and potential alternatives
+6. Reward Model 
+    a. Explanation of the reward model used in the vegetarian chatbot use case 
+    b. Discussion of the choice of model and potential alternatives 
+        - Example: Prompt for scoring texts using Llama-2-70b-chat-hf
+7. TRL PPO Trainer 
+    a. Explanation of the TRL PPO Trainer used in the vegetarian chatbot use case 
+    b. Discussion of the choice of trainer and potential alternatives
+8. Model Serving 
+    a. Explanation of how the reward model is deployed using Databricks Model Serving 
+    b. Discussion of the choice of serving infrastructure and potential alternatives
+9. Key Metrics 
+    a. Explanation of the key metrics to track during training 
+        - Example: Time evolution of the key training metrics
+10. Evaluation 
+    a. Explanation of how to evaluate the fine-tuned model 
+         - Example: Comparison of the pre-fine-tuned and post-fine-tuned models
+11. Inference 
+    a. Explanation of how to deploy the fine-tuned model for real-time inference 
+    b. Discussion of the choice of inference infrastructure and potential alternatives
+12. Wrap Up 
+    a. Supervised fine-tuning of large language models (LLMs) may not be enough for production-ready models
+    b. Reinforcement learning is a common method for LLM alignment but has challenges
+    c. The article introduces a solution that eliminates the need for manual labor in collecting ranked outputs, making reinforcement learning more accessible""",Aligning large language models (LLMs) for real world use cases,"Introduction
+Alignment of large language models (LLM) is a critical topic when building production-ready models for industrial use cases. An aligned model understands and complies with the user’s intent. Take a customer support chatbot as an example. Pre-training a model on a large corpus of text may allow the model to generate a coherent text following an input. However, this model is not aligned, since we expect the model to behave as an experienced customer support agent, who follows policies and best practices defined for customer service in the company. We need to fine-tune the model using an instruction-following dataset that consists of many question-and-answer pairs to show the model what experienced customer support agents usually answer in different situations. This process is called supervised fine-tuning. Many models available today are already fine-tuned in this way, and that’s why models like Llama-2-70b-chat-hf and gpt-3.5-turbo-instruct answer your questions right off the bat.
+
+In many situations, more than just a supervised fine-tuned model is needed. This is especially true when we are building a customer-facing application with a strict code of conduct that we want the model to follow. For instance, we want our model to generate gender-neutral recommendations or avoid using toxic language. We are maybe building a chatbot for a targeted segment of users, such as vegetarians, and we want the models to generate only vegetarian content. Many supervised fine-tuned models, including the ones mentioned above, do not perform very well when the requirements are too specific. The model may need further fine-tuning. For this last stretch of alignment, a technique called reinforcement learning is often used.
+
+ 
+
+Reinforcement Learning from Human Feedback (RLHF)
+In this approach, we prepare a dataset that contains millions of input and output pairs. An important thing to note is that, for each input, we need multiple outputs. Labelers will then rank these outputs based on how well they align with the use case. This dataset is then used to train a reward model, which is often yet another LLM. After the training, the reward model should be able to assign a score to a generated text, indicating how well it aligns with what you, as a user, want to achieve. We use this model during the fine-tuning process (between the forward and the back propagations) to score the texts generated by the target model and compute the reward. Proximal policy optimization (PPO) is a popular algorithm that can be used here. It will then take this reward and update the model weights to maximize the reward. Under the right conditions, we can assume that the reward increase is associated with the better alignment of the model.
+
+Noticeably, the problem with this approach is that it requires high-quality human labelers to rank millions of outputs. This is an expensive operation by itself, which also inflicts many operational complications. This has been the bottleneck of this technique, preventing it from being widely adopted by industrial use cases.
+
+ 
+
+Reinforcement Learning from AI Feedback (RLAIF)
+In this article, we propose a solution that uses a powerful LLM as a reward model inspired by the preceding work. The use of an off-the-shelf LLM as a reward function allows us to omit the manual work of collecting millions of ranked outputs from human labelers and training a reward model. The architecture we present provides access to the reward model from within the training loop, in which the reward model generates scores after each batch forward propagation. These scores are then used to calculate the reward, which the PPO algorithm maximizes as per the discussion above. At the core of the architecture is the low latency, high throughput serverless model serving feature of Databricks Model Serving. Alternatively, users can prepare the comparison dataset offline using a pre-trained or a fine-tuned LLM, which can then be used by the DPO algorithm to directly optimize the preference.
+
+The advantage of this solution is that it only requires (1) a list of prompts (10k-100k) similar to the use case and (2) a prompt that allows an LLM to score the generated texts on how well they align with the use case. Both these inputs can be obtained without much effort using LLMs (shortly discussed). Furthermore, with just prompt engineering, model alignment can be guided in any direction. We believe this solution will open up the door for many companies previously struggling to justify the high cost of human labelers or needing to avoid getting into operational issues. Companies can align their LLMs in almost any way they want in a timely and cost-effective manner.
+
+In the following sections, we describe the solution in more detail. We will do this along with an actual use case to demonstrate the feasibility of the solution. In the final section, we will wrap up the article by repeating the important messages.
+
+ 
+
+Use Case: Vegetarian Chatbot
+In our fictitious company, we are developing a chatbot for our users, who are all vegetarian. The users will interact with this chatbot by asking questions about foods, recipes, and ingredients. We want the model to provide only vegetarian content and avoid anything non-vegetarian, e.g., meat, fish. However, all open-source models available today will generate non-vegetarian content without being explicitly told not to. We want to align our model to provide only vegetarian content even when our users don’t specify their dietary preferences. Users are not as expressive as we want them to be, but this shouldn’t be the reason why they see non-vegetarian content recommended by our chatbot. We will use the PPO algorithm to fine-tune a model. All the code and the configuration files are available here.
+
+ 
+
+Architecture
+Overview of the architecture
+Overview of the architecture
+
+Prompt Generation
+We used Llama-2-70b-chat-hf  to generate 10k prompts before fine-tuning. This can be done either offline in batches or online using Databricks Model Serving. Foundation Model APIs, which give easy access to various powerful models, can be leveraged here.
+
+ 
+
+TOPICS = [""Nutritious"", ""Plant-Based"", ""Meal Planning"", ""Cooking Techniques"", ""Vegetarianism"",...]
+
+SYSTEM_PROMPT = f""""""
+ You are an AI assistant that specializes in food. Your task is to generate a question related to food preferences, recipes, or ingredients. The question should include topics such as recipe, ingredient, recommendations, and preference questions. Generate 1 question based on the topics provided in the instructions. Do not generate more than 1 question.
+
+  Below is an example of a question. Always format the output in JSON format as follows:
+ ```json
+ {{
+   ""question"": ""What are some ingredients for a quick dinner preparation?""
+ }}
+ ``` """"""
+
+QUESTION_START = ""Give me a question related to the following topic:""
+ 
+
+The above is the actual prompt we used to generate the 10k training examples. An important thing to note is that when passed to the target model, these prompt examples should generate both vegetarian and non-vegetarian content of varying quality. Having variance in the distribution of scores is essential for the PPO algorithm to optimize the model weights efficiently. The 10k prompts and the code that generated them are available here. In the real-world business scenario, real questions asked by the users should be used instead of the generated data. In a case when a company does not possess enough example questions, existing ones can be blended with the generated set of questions.
+
+
+Target Model
+We fine-tuned Llama-2-7b-chat-hf . Depending on the capacity of the computing infrastructure, different open-source models of varying sizes can be used as the target model. This model was specifically chosen to demonstrate the solution with a relatively modest compute resource.
+
+
+Reward Model
+We used Llama-2-70b-chat-hf as the reward model. In contrast to the target model that is loaded into your local environment, the reward model is hosted on Databricks Model Serving. Therefore, the underlying infrastructure is managed by Databricks providing optimized performance with robust security and governance features. We only need to provide the expected throughput in terms of the number of tokens that will be generated per unit time. This number should increase as the batch size in the training loop increases. Similar to the target model, other open-source models or proprietary models can be used here as well. An important requirement here is that the model is capable of accurately scoring the texts. This is the most critical assumption in the entire solution and we encourage you to run a thorough analysis when adapting this solution to your use case.
+
+One such analysis could be to take a few hundred prompts each with a good and a bad response, and ask the reward model to score the responses using a prompt that looks like below. If the model is able to assign a score below 0.5 for a bad response, and vice versa for a good response, we can take that as an accurate prediction. Then, any binary classification metric such as accuracy, precision, or F1 can be used to evaluate the quality of the reward model with respect to the alignment problem we have. Check the multiple experiments we ran to test the feasibility of using Llama-2-70b-chat-hf as the reward function for our use case.
+
+ 
+
+def prompt_score(text):
+ return f""""""[INST]<<SYS>>You are an AI assistant that specializes in vegetarian cuisine. Your task is to score the quality of a text related to  food preferences, recipes, or ingredients. Generate 1 score on a scale from 0.01 to 0.99, which indicates how good the text provided in the instruction is. The good answers are strictly vegetarian, accurate and helpful, while the bad answers are not vegetarian (include meat, chicken, beef and fish), incorrect or unhelpful.
+
+  Below is an example of a good text with score 0.99 and a bad text with score 0.01.
+
+  - Good text with score 0.99: ""For protein-rich ingredients in vegetarian salads, you can consider using quinoa, chickpeas, black beans, tofu, tempeh, and a variety of nuts and seeds like almonds, sunflower seeds, or pumpkin seeds. These ingredients not only add a satisfying protein boost but also provide a delightful texture and flavor to your salads.""
+
+ - Bad text with score 0.01: ""You can add some sliced deli meats like turkey or chicken for protein. They are light and won't overpower the taste of your salad. Plus, they're easy to prepare and add to any salad mix. Fish is also a great alternative.""
+
+ Give the score at the beginning. Give only the score. Use no more than 10 words.<</SYS>>
+ text: {text} [/INST]""""""
+ 
+
+The above is the actual prompt we used to score the texts using Llama-2-70b-chat-hf. The key to successfully eliciting the expected output is to be explicit, concise, and provide a few examples. To learn more about the use of LLMs as judges, refer to this article.
+
+
+TRL PPO Trainer
+We utilized the PPO implementation from the TRL library - an open-source framework developed by Hugging Face. Additionally, LoRA was used to reduce GPU memory requirements during the fine-tuning. PPO requires two copies of the target model, but when combined with LoRA, only one copy is effectively needed, which reduces the memory footprint significantly. TRL is integrated with Accelerate, and DeepSpeed, which has a native integration with Databricks, was used to achieve parallelism and optimize resource utilization. 
+
+The actual training was done on a single node cluster with 8 x A10G (24GB GPU memory), which is a sufficient setup for a 7B parameter model to be fine-tuned. When fine-tuning a larger model  (e.g. Llama-2-13b-chat-hf, mpt-30b), we recommend using more powerful instances with a larger memory size like A100 GPU or even potentially on a multi-node setting. See the code for the detailed implementation.
+
+ 
+
+Model Serving
+As briefly explained, we deployed the Llama-2-70b-chat-hf model behind a Databricks Model Serving endpoint with an expected throughput of 635 tokens generated per second, which we use as a reward model. In our setup, we prompt the model to evaluate responses by assigning them a score within a 0.01 to 0.99 range. This scoring range is designed to mirror the likelihood of a response being considered high-quality. Subsequently, we apply the logit function, defined as math.log(score/(1.0-score)), to transform these scores. This transformation effectively maps the model-generated probabilities to the entire real number continuum, extending from negative to positive infinity. This approach enhances our ability to distinguish outstanding responses more clearly and apply appropriate penalties to inferior ones.
+
+For example, this approach allows us to penalize the model for generating mediocre texts below a score 0.5 (and vice versa for those above 0.5) and place more weights on texts with scores closer to the extremes, which is merely a mathematical trick we used to accelerate the convergence of fine-tuning. See the details of the implementation here.
+
+ 
+
+Key Metrics
+Time evolution of the key training metrics: solid lines are smoothed data points.
+Time evolution of the key training metrics: solid lines are smoothed data points.
+
+The key metrics to pay attention to during the training are: (1) the mean reward, (2) the reward standard deviation, and (3) the KL divergence. If the mean reward increases and eventually converges over time, this indicates that the model generates high-quality texts with higher scores. For the same reason, the standard deviation of the mean reward should decrease and converge over time. The KL divergence usually increases rapidly at the beginning of the training, indicating the target model is drifting away from its original weights but should eventually converge. We observed all these behaviors in the training for our use case.
+
+We used tensorboard to track these metrics in real time during the training. It’s also essential to store the combination of a prompt, a generated text, and a score to inspect that the model behaves as expected during the training. In Databricks Model Serving, all requests to and responses from the model can be automatically captured and logged in a Delta Lake table.
+
+ 
+
+Evaluation
+Evaluation is the second most crucial step in the entire solution, with the validation of the reward model being number one. In this use case, we kept 100 prompts as a hold-out evaluation set, which we refrained from using for fine-tuning. We then fed these prompts to both the original and fine-tuned models and compared the quality of the outputs. We observed that 43 texts generated by the original (pre-fine-tuned) model contained non-vegetarian contents, whereas this number was down to 30 for the fine-tuned (see the notebook) model. We achieved nearly 30% improvement in the alignment quality, which indicates this solution's feasibility. The fine-tuned model is not perfect, but further improvements could be made by (1) revising the prompt to produce more accurate scores, (2) increasing the number and the variety of the training prompts, (3) increasing the number of training epochs, (4) testing different LLMs as the reward model.
+
+RyutaYoshimatsu_5-1709809191374.png
+
+RyutaYoshimatsu_6-1709809191342.png
+
+Samples of outputs generated by the pre-fine-tuning (left) and the post-fine-tuning (right) models
+Samples of outputs generated by the pre-fine-tuning (left) and the post-fine-tuning (right) models
+
+
+Inference
+After we evaluated the fine-tuned model, we deployed it behind a real-time endpoint and made it available for a downstream application. Databricks Model Serving provides optimized inference for large open-source models like Llama2. The deployment is straightforward using an API  (see this notebook) or UI. 
+
+ 
+
+Wrap Up
+Aligning LLM is a crucial topic when building production-ready models. A supervised fine-tuned model is often not sufficient, and we need to further tune it for our specific requirements. Reinforcement learning is often used, but this requires human labelers to rank millions of outputs, which is, for many companies, cost-prohibitive and operationally complex.
+
+In this article, we proposed a solution that uses a pre-trained or fine-tuned LLM as a reward model that eliminates the manual labor of collecting millions of ranked outputs from human labelers. This solution will enable many companies previously struggling to justify the high cost of labeling and avoid getting into operational complications to align their LLMs efficiently.
+
+ 
+
+Acknowledgment
+We thank Hugging Face, especially the TRL team, for making tremendous contributions to this field. For this blog post, we borrowed a lot of content from their amazing TRL repository."
+"The article describes an example use case of streaming events from multiple games through Kafka and terminating in Delta tables using Delta Live Tables (DLT). The example demonstrates how to use DLT to:
+Stream from Kafka into a Bronze Delta table
+Consume streaming Protobuf messages with schemas managed by the Confluent Schema Registry, handling schema evolution gracefully
+Demultiplex (demux) messages into multiple game-specific, append-only Silver Streaming Tables
+Create Materialized Views to recalculate aggregate values periodically
+The article first reviews streaming use cases and some streaming payload format options, including JSON, Avro, and Protocol Buffers (Protobuf). It then describes the DLT code for the example and the related pipeline DAG. The example code is available on GitHub and includes a simulator (Producer), a notebook to install the DLT pipeline (Install_DLT_Pipeline), and a Python notebook to process the data that is streaming through Kafka (DLT).
+The article also discusses the benefits of using an optimized serialization format, Protobuf, and demonstrates its integration with Databricks to construct a comprehensive end-to-end demultiplexing pipeline. The example demonstrates how to handle schema evolution with DLT and the Confluent Schema Registry. The article concludes by providing instructions for running the example and the prerequisites required.
+Overall, the article provides a detailed walkthrough of creating a DLT pipeline that consumes Protobuf values from an Apache Kafka stream, utilizes the Confluent Schema Registry, and handles schema evolution in DLT pipelines.","1. Introduction a. Overview of the example use case b. Description of the system architecture c. Explanation of the main components of the example
+2. Streaming Use Cases a. Common streaming use cases b. Overview of streaming data applications c. Comparison of different streaming payload formats
+3. Protocol Buffers (Protobuf) a. Explanation of Protobuf b. Advantages of using Protobuf c. Comparison of Protobuf with other serialization formats
+4. Delta Live Tables (DLT) a. Overview of DLT b. Benefits of using DLT c. Comparison of DLT with other ETL frameworks
+5. Building a DLT Pipeline a. Code walkthrough b. Explanation of the different components of the pipeline c. Description of the schema evolution in DLT pipelines
+6. Utilizing the Confluent Schema Registry a. Explanation of the Confluent Schema Registry b. Importance of the Confluent Schema Registry in the example c. Description of how the Confluent Schema Registry is used in the example
+7. Conclusion a. Summary of the example b. Discussion of the benefits of using Protobuf and DLT c. Suggestions for further reading and exploration.","Using Delta Live Tables (DLT) to stream from Kafka into a Bronze Delta table, consume streaming Protobuf messages, demultiplex messages into multiple game-specific Silver Streaming Tables, and create Materialized Views for aggregate values","This article describes an example use case where events from multiple games stream through Kafka and terminate in Delta tables. The example illustrates how to use Delta Live Tables (DLT) to:
+
+Stream from Kafka into a Bronze Delta table.
+Consume streaming Protobuf messages with schemas managed by the Confluent Schema Registry, handling schema evolution gracefully.
+Demultiplex (demux) messages into multiple game-specific, append-only Silver Streaming Tables. Demux indicates that a single stream is split or fanned out into separate streams.
+Create Materialized Views to recalculate aggregate values periodically.
+A high level view of the system architecture is illustrated below.
+
+ 
+
+Protobuf DLT.png
+
+ First, let's look at the Delta Live Tables code for the example and the related pipeline DAG so that we can get a glimpse of the simplicity and power of the DLT framework.
+
+
+Code.png        DAG.png
+On the left, we see the DLT Python code. On the right, we see the view and the tables created by the code. The bottom cell of the notebook on the left operates on a list of games (GAMES_ARRAY) to dynamically generate the fourteen target tables we see in the DAG.
+
+Before we go deeper into the example code, let's take a step back and review streaming use cases and some streaming payload format options.
+
+ 
+
+Streaming overview
+Skip this section if you're familiar with streaming use cases, protobuf, the schema registry, and Delta Live Tables. In this article, we'll dive into a range of exciting topics.
+
+Common streaming use cases
+Uncover the diverse streaming data applications in today's tech landscape.
+Protocol buffers (Protobuf)
+Learn why this fast and compact serialization format is a game-changer for data handling.
+Delta Live Tables (DLT)
+Discover how DLT pipelines offer a rich, feature-packed platform for your ETL (Extract, Transform, Load) needs.
+Building a DLT pipeline
+A step-by-step guide on creating a DLT pipeline that seamlessly consumes Protobuf values from an Apache Kafka stream.
+Utilizing the Confluent Schema Registry
+Understand how this tool is crucial for decoding binary message payloads effectively.
+Schema evolution in DLT pipelines
+Navigate the complexities of schema evolution within the DLT pipeline framework when streaming protobuf messages with evolving schema.
+Common streaming use cases
+The Databricks Data Intelligence Platform is a comprehensive data-to-AI enterprise solution that combines data engineers, analysts, and data scientists on a single platform. Streaming workloads can power near real-time prescriptive and predictive analytics and automatically retrain Machine Learning (ML) models using Databricks built-in MLOps support. The models can be exposed as scalable, serverless REST endpoints, all within the Databricks platform.
+
+The data comprising these streaming workloads may originate from various use cases:
+
+
+Streaming Data
+
+Use Case
+
+IoT sensors on manufacturing floor equipment
+
+Generating predictive maintenance alerts and preemptive part ordering
+
+Set-top box telemetry
+
+Detecting network instability and dispatching service crews
+
+Player metrics in a game
+
+Calculating leader-board metrics and detecting cheat
+
+Data in these scenarios is typically streamed through open source messaging systems, which manage the data transfer from producers to consumers. Apache Kafka stands out as a popular choice for handling such payloads. Confluent Kafka and AWS MSK provide robust Kafka solutions for those seeking managed services.
+
+Optimizing the streaming payload format
+Databricks provides capabilities that help optimize the AI journey by unifying Business Analysis, Data Science, and Data Analysis activities in a single, governed platform. In your quest to optimize the end-to-end technology stack, a key focus is the serialization format of the message payload. This element is crucial for efficiency and performance. We'll specifically explore an optimized format developed by Google, known as protocol buffers (or ""protobuf""), to understand how it enhances the technology stack.
+
+What makes protobuf an optimized serialization format?
+Google enumerates the advantages of protocol buffers, including compact data storage, fast parsing, availability in many programming languages, and optimized functionality through automatically generated classes.
+
+A key aspect of optimization usually involves using pre-compiled classes in the consumer and producer programs that a developer typically writes. In a nutshell, consumer and producer programs that leverage protobuf are ""aware"" of a message schema, and the binary payload of a protobuf message benefits from primitive data types and positioning within the binary message, removing the need for field markers or delimiters.
+
+Why is protobuf usually painful to work with?
+Programs that leverage protobuf must work with classes or modules compiled using protoc (the protobuf compiler). The protoc compiler compiles those definitions into classes in various languages, including Java and Python. To learn more about how protocol buffers work, go here.
+
+Databricks makes working with protobuf easy
+Starting in Databricks Runtime 12.1, Databricks provides native support for serialization and deserialization between Apache Spark struct.... Protobuf support is implemented as an Apache Spark DataFrame transformation and can be used with Structured Streaming or for batch operations. It optionally integrates with the Confluent Schema Registry (a Databricks-exclusive feature). 
+
+Databricks makes it easy to work with protobuf because it handles the protobuf compilation under the hood for the developer. For instance, the data pipeline developer does not have to worry about installing protoc or using it to compile protocol definitions into Python classes.
+
+Exploring payload formats for streaming IoT data
+Before we proceed, it is worth mentioning that JSON or Avro may be suitable alternatives for streaming payloads. These formats offer benefits that, for some use cases, may outweigh protobuf. Let's quickly review these formats.
+
+JSON
+
+JSON is an excellent format for development because it is primarily human-readable. The other formats we'll explore are binary formats, which require tools to inspect the underlying data values. Unlike Avro and protobuf, however, the JSON document is stored as a large string (potentially compressed), meaning more bytes may be used than a value represents. Consider the short int value of 8. A short int requires two bytes. In JSON, you may have a document that looks like the following, and it will require several bytes (~30) for the associated key, quotes, etc.
+
+ 
+
+{
+  ""my_short"": 8
+}
+ 
+
+When we consider protobuf, we expect 2 bytes plus a few more for the overhead related to the positioning metadata.
+
+JSON support in Databricks
+On the positive side, JSON documents have rich benefits when used with Databricks. Databricks Autoloader can easily transform JSON to a structured DataFrame while also providing built-in support for:
+
+Schema inference - when reading JSON into a DataFrame, you can supply a schema so that the target DataFrame or Delta table has the desired schema. Or you can let the engine infer the schema. Alternatively, schema hints can be supplied if you want a balance of those features.
+Schema evolution - Autoloader provides options for how a workload should adapt to changes in the schema of incoming files.
+Consuming and processing JSON in Databricks is simple. To create a Spark DataFrame from JSON files can be as simple as this:
+
+ 
+
+df = spark.read.format(""json"").load(""example.json"")
+ 
+
+Avro
+Avro is an attractive serialization format because it is compact, encompasses schema information in the files themselves, and has built-in database support in Databricks that includes schema registry integration. This tutorial, co-authored by Databricks' Angela Chu, walks you through an example that leverages Confluent's Kafka and Schema Registry.
+
+To explore an Avro-based dataset, it is as simple as working with JSON:
+
+ 
+
+df = spark.read.format(""avro"").load(""example.avro"")
+ 
+
+This datageeks.com article compares Avro and protobuf. It is worth a read if you are on the fence between Avro and protobuf. It describes protobuf as the ""fastest amongst all."", so if speed outweighs other considerations, such as JSON and Avro's greater simplicity, protobuf may be the best choice for your use case.
+
+ 
+
+Example demux pipeline
+The source code for the end-to-end example is located on GitHub. The example includes a simulator (Producer), a notebook to install the Delta Live Tables pipeline (Install_DLT_Pipeline), and a Python notebook to process the data that is streaming through Kafka (DLT).
+
+Scenario
+Imagine a scenario where a video gaming company is streaming events from game consoles and phone-based games for a number of the games in its portfolio. Imagine the game event messages have a single schema that evolves (i.e., new fields are periodically added). Lastly, imagine that analysts want the data for each game to land in its own Delta Lake table. Some analysts and BI tools need pre-aggregated data, too.
+
+Using DLT, our pipeline will create 1+2N tables: 
+
+One table for the raw data (stored in the Bronze view).
+One Silver Streaming Table for each of the N games, with events streaming through the Bronze table.
+Each game will also have a Gold Delta table with aggregates based on the associated Silver table.
+ 
+Code walkthrough
+Bronze table definition
+We'll define the Bronze table (bronze_events) as a DLT view by using the @Dlt.viewannotation.
+
+ 
+
+import pyspark.sql.functions as F
+from pyspark.sql.protobuf.functions import from_protobuf
+
+@dlt.view
+def bronze_events():
+  return (
+    spark.readStream.format(""kafka"")
+    .options(**kafka_options)
+    .load()
+    .withColumn('decoded', from_protobuf(F.col(""value""), options = schema_registry_options))
+    .selectExpr(""decoded.*"")
+  )
+ 
+
+The repo includes the source code that constructs values for kafka_options. These details are needed so the streaming Delta Live Table can consume messages from the Kafka topic and retrieve the schema from the Confluent Schema registry (via config values in schema_registry_options). This line of code is what manages the deserialization of the protobuf messages:
+
+ 
+
+.withColumn('decoded', from_protobuf(F.col(""value""), options = schema_registry_options))
+ 
+
+The simplicity of transforming a DataFrame with protobuf payload is thanks to this function: from_protobuf (available in Databricks Runtime 12.1 and later). In this article, we don't cover to_protobuf, but the ease of use is the same. The schema_registry_options are used by the function to look up the schema from the Confluent Schema Registry.
+
+Delta Live Tables is a declarative ETL framework that simplifies the development of data pipelines. So, suppose you are familiar with Apache Spark Structured Streaming. In that case, you may notice the absence of a checkpointLocation (which is required to track the stream's progress so that the stream can be stopped and started without duplicating or dropping data). The absence of the checkpointLocation is because Delta Live Tables manages this need out-of-the-box for you. Delta Live Tables also has other features that help make developers more agile and provide a common framework for ETL across the enterprise. Delta Live Tables Expectations, used for managing data quality, is one such feature.
+
+Silver tables
+The following function creates a Silver Streaming Table for the given game name provided as a parameter:
+
+ 
+
+def build_silver(gname):
+    .table(name=f""silver_{gname}_events"")
+    def gold_unified():
+        return dlt.read_stream(""bronze_events"").where(F.col(""game_name"") == gname)
+ 
+
+Notice the use of the @Dlt.table annotation. Thanks to this annotation, when build_silver is invoked for a given gname, a DLT table will be defined that depends on the source bronze_events table. We know that the tables created by this function will be Streaming Tables because of the use of dlt.read_stream.
+
+
+Gold tables
+The following function creates a Gold Materialized View for the given game name provided as a parameter:
+
+ 
+
+def build_gold(gname):
+    .table(name=f""gold_{gname}_player_agg"")
+    def gold_unified():
+        return (
+            dlt.read(f""silver_{gname}_events"")
+            .groupBy([""gamer_id""])
+            .agg(
+                F.count(""*"").alias(""session_count""),
+                F.min(F.col(""event_timestamp"")).alias(""min_timestamp""),
+                F.max(F.col(""event_timestamp"")).alias(""max_timestamp"")
+            )
+        )
+ 
+
+We know the resulting table will be a ""Materialized View"" because of the use of dlt.read. This is a simple Materialized View definition; it simply performs a count of source events along with min and max event times, grouped by gamer_id.
+
+Metadata-driven tables
+The previous two sections of this article defined functions for creating Silver (Streaming) Tables and Gold Materialized Views. The metadata-driven approach in the example code uses a pipeline input parameter to create N*2 target tables (one Silver table for each game and one aggregate Gold table for each game). This code drives the dynamic table creation using the aforementioned build_silver and build_gold functions:
+
+ 
+
+GAMES_ARRAY = spark.conf.get(""games"").split("","")
+
+for game in GAMES_ARRAY:
+    build_silver(game)
+    build_gold(game)
+ 
+
+At this point, you might have noticed that much of the control flow code data engineers often have to write is absent.  This is because, as mentioned above, DLT is a declarative programming framework.  It automatically detects dependencies and manages the pipeline's execution flow.  Here's the DAG that DLT creates for the pipeline:
+
+craig_lukasik_3-1709831153588.png
+
+A note about aggregates in a streaming pipeline
+For a continuously running stream, calculating some aggregates can be very resource-intensive. Consider a scenario where you must calculate the ""median"" for a continuous stream of numbers. Every time a new number arrives in the stream, the median calculation will need to explore the entire set of numbers that have ever arrived. In a stream receiving millions of numbers per second, this fact can present a significant challenge if your goal is to provide a destination table for the median of the entire stream of numbers. It becomes impractical to perform such a feat every time a new number arrives. The limits of computation power and persistent storage and network would mean that the stream would continue to grow a backlog much faster than it could perform the calculations.
+
+In a nutshell, it would not work out well if you had such a stream and tried to recalculate the median for the universe of numbers that have ever arrived in the stream. So, what can you do? If you look at the code snippet above, you may notice that this problem is not addressed in the code! Fortunately, as a Delta Live Tables developer, I do not have to worry about it. The declarative framework handles this dilemma by design. DLT addresses this by materializing results only periodically. Furthermore, DLT provides a table property that allows the developer to set an appropriate trigger interval.
+
+ 
+Reviewing the benefits of DLT
+Governance
+Unity Catalog governs the end-to-end pipeline. Thus, permission to target tables can be granted to end-users and service principals needing access across any Databricks workspaces attached to the same metastore.
+
+Lineage
+From the Delta Live Tables interface, we can navigate to the Catalog and view lineage.
+
+Click on a table in the DAG. Then click on the ""Target table"" link.
+
+craig_lukasik_4-1709831153624.png
+ 
+
+Click on the ""Lineage"" tab for the table. Then click on the ""See lineage graph"" link.
+
+
+Lineage also provides visibility into other related artifacts, such as notebooks, models, etc.
+
+craig_lukasik_5-1709831153026.png
+ 
+
+This lineage helps accelerate team velocity by making it easier to understand how assets in the workspace are related.
+
+craig_lukasik_6-1709831152996.png
+ 
+
+Hands-off schema evolution
+craig_lukasik_7-1709831152364.pngDelta Live Tables will detect this as the source stream's schema evolves, and the pipeline will restart. To simulate a schema evolution for this example, you would run the Producer notebook a subsequent time but with a larger value for num_versions, as shown on the left. This will generate new data where the schema includes some additional columns. The Producer notebook updates the schema details in the Confluent Schema Registry. 
+
+When the schema evolves, you will see a pipeline failure like this one:
+
+craig_lukasik_8-1709831153364.png
+
+If the Delta Live Tables pipeline runs in Production mode, a failure will result in an automatic pipeline restart. The Schema Registry will be contacted upon restart to retrieve the latest schema definitions. Once back up, the stream will continue with a new run:
+
+craig_lukasik_9-1709831153186.png
+
+ 
+Conclusion
+In high-performance IoT systems, optimization extends through every layer of the technology stack, focusing on the payload format of messages in transit. Throughout this article, we've delved into the benefits of using an optimized serialization format, protobuf, and demonstrated its integration with Databricks to construct a comprehensive end-to-end demultiplexing pipeline. This approach underlines the importance of selecting the right tools and formats to maximize efficiency and effectiveness in IoT systems.""
+
+Instructions for running the example
+To run the example code, follow these instructions:
+
+In Databricks, clone this repo: https://github.com/craig-db/protobuf-dlt-schema-evolution.
+Set up the prerequisites (documented below).
+Follow the instructions in the README notebook included in the repo code.
+Prerequisites
+A Unity Catalog-enabled workspace – this demo uses a Unity Catalog-enabled Delta Live Tables pipeline. Thus, Unity Catalog should be configured for the workspace where you plan to run the demo. 
+As of January 2024, you should use the Preview channel for the Delta Live Tables pipeline. The ""Install_DLT_Pipeline"" notebook will use the Preview channel when installing the pipeline.
+Confluent account – this demo uses Confluent Schema Registry and Confluent Kafka.
+Secrets to configure
+The following Kafka and Schema Registry connection details (and credentials) should be saved as Databricks Secrets and then set within the Secrets notebook that is part of the repo:
+
+SR_URL: Schema Registry URL (e.g. https://myschemaregistry.aws.confluent.cloud)
+SR_API_KEY: Schema Registry API Key
+SR_API_SECRET: Schema Registry API Secret
+KAFKA_KEY: Kafka API Key
+KAFKA_SECRET: Kafka Secret
+KAFKA_SERVER: Kafka host:port (e.g. mykafka.aws.confluent.cloud:9092)
+KAFKA_TOPIC: The Kafka Topic
+TARGET_SCHEMA: The target database where the streaming data will be appended into a Delta table (the destination table is named unified_gold)
+CHECKPOINT_LOCATION: Some location (e.g., in DBFS) where the checkpoint data for the streams will be stored
+Go here to learn how to save secrets to secure sensitive information (e.g., credentials) within the Databricks Workspace: https://docs.databricks.com/security/secrets/index.html.
+
+Kafka and Schema Registry
+The code in the example was written and tested using Confluent's hosted Kafka. To obtain a free trial Confluent account, go here: https://www.confluent.io/confluent-cloud/tryfree/. The code may or may not work seamlessly with other Kafka and Schema Registry providers.
+
+An Important Note about Costs on Confluent Cloud
+You should know that charges may be incurred for using this example with Confluent's Kafka & Schema Registry. As of the writing of this article, the free instance of Confluent Cloud allowed for ten partitions. Thus, if you wish to stay within that limit, when you run the Producer notebook, choose ""10"" as the value for the ""Number of Target Delta tables"" widget."
+"This article discusses how to share data across workspaces in Databricks when using legacy datasets in the Hive Metastore. Although Unity Catalog and Delta Sharing make it easy to share data across workspaces, sharing Hive Metastore data requires an alternative approach called Databricks to Databricks Lakehouse Federation. The article explains how to set up Lakehouse Federation and demonstrates its usage. The article also highlights the benefits of using this method, such as simplicity and flexibility, and provides links to further reading on the topic. Overall, the article provides a clear and concise overview of how to share legacy datasets in Databricks.","1a. Sharing data with Unity Catalog Metastore
+Unity Catalog allows sharing catalogs using the same metastore across different workspaces
+Hive Metastores in shared workspaces are not exposed to each other, so datasets cannot be accessed across workspaces
+b. Sharing across Workspaces with Unity Catalog
+c. Diagram illustrating sharing with Unity Catalog
+2a. Sharing with Delta Sharing
+Delta Sharing is ideal for cross-region and cross-cloud data sharing
+Both producer and consumer workspaces need Unity Catalog enabled to share assets
+Hive Metastore catalog is not visible when selecting assets to add to the share
+2a. Sharing data across workspaces with Delta Sharing
+b. Diagram illustrating sharing with Delta Sharing
+3a. How to share legacy datasets with Lakehouse Federation
+Previously, sharing legacy datasets involved more complex options
+Databricks to Databricks Lakehouse Federation offers a solution for sharing legacy datasets
+b. Setting up Databricks to Databricks Lakehouse Federation
+c. Create a personal access token on the producer workspace
+d. Set up Lakehouse Federation in the consumer workspace
+e. Create a foreign catalog in the consumer workspace using the connection
+4. Conclusion
+a. Databricks Lakehouse Federation makes sharing legacy datasets simple
+b. Bridging the gap between current Hive Metastore and the future of Unity Catalog
+c. Further reading","How to share data across workspaces using Databricks, including Unity Catalog, Delta Sharing, and Lakehouse Federation","If you are using Databricks to manage your data and haven't fully upgraded to Unity Catalog, you are likely dealing with legacy datasets in the Hive Metastore.  While Unity Catalog and Delta Sharing make it easy to share data across workspaces, sharing Hive Metastore data across workspaces requires an alternative approach: Databricks to Databricks Federation, currently in public preview.
+
+In this article, we'll review the ways to share data across workspaces with Unity Catalog, Delta Sharing, and Lakehouse Federation.
+
+Sharing data with Unity Catalog Metastore
+For Databricks deployments with Unity Catalog enabled, catalogs using the same metastore can be shared to different workspaces.  In the following diagram, catalog Y is shared to workspace Y and workspace X. This will happen as long as you haven’t assigned them to a specific workspace like with catalog X.
+
+Sharing across Workspaces with Unity Catalog
+Sharing across Workspaces with Unity Catalog
+
+ 
+
+However, in this scenario the Hive Metastores in workspace X and Y are not exposed to each other.  You cannot access the datasets from within them across workspaces.
+
+Sharing with Delta Sharing
+Delta Sharing is ideal for cross-region and cross-cloud data sharing, as well as sharing with other stakeholders outside the business. You can leverage Delta Sharing to share a number of assets, including datasets, with another workspace. With the built-in Delta Sharing capability, the producer workspace needs Unity Catalog enabled to share the assets, while the consumer workspace doesn't. However, even with both workspaces having Unity Catalog enabled, you are unable to see the Hive Metastore catalog when selecting assets to add to the share.
+
+ 
+
+Sharing data across workspaces with Delta Sharing
+Sharing data across workspaces with Delta Sharing
+
+
+How to share legacy datasets with Lakehouse Federation
+Given the limitations of Unity Catalog and Delta Sharing, the question remains: how do you share legacy datasets?  Previously, sharing legacy datasets involved more complex options like upgrading to Unity Catalog, using 3rd party tools, or coding up a custom solution.  All of these solutions take time and effort. We recommend investing time in upgrading to Unity Catalog, but if that isn’t an option right now, then Databricks to Databricks Lakehouse Federation offers a solution.  Here's how it works:
+
+Producer workspace
+Unlike other methods, your data source (producer workspace) doesn't require Unity Catalog. This provides flexibility for workspaces with existing Hive Metastore setups. It is important to note however that you will need a cluster running on the producer side to accept the queries being sent.
+Consumer workspace
+The Workspace receiving the data (consumer workspace) needs Unity Catalog enabled. This allows you to do the setup of Lakehouse Federation. 
+Databricks to Databricks sharing with Lakehouse Federation
+Databricks to Databricks sharing with Lakehouse Federation
+
+Setting up Databricks to Databricks Lakehouse Federation
+First, create a personal access token on the producer workspace, belonging to a service account with permission on the datasets. Depending on whether Unity Catalog is enabled, these permissions will be at an account level or Workspace level.
+
+Next, switch to the consuming workspace. Here you can set up Lakehouse Federation via the Catalog explorer. Select Databricks as the connection type and add in details of the producer workspace and cluster:
+
+Setting up Lakehouse Federation in the Catalog Explorer
+Setting up Lakehouse Federation in the Catalog Explorer
+
+
+Finally, you can create a foreign catalog in the consumer workspace using the connection you set up and referencing the Hive Metastore:
+
+
+eeezee_5-1703165446219.png
+eeezee_0-1703165737258.png
+Now you can directly access the schemas and datasets in the Hive Metastore of the connected workspace!
+
+Conclusion
+With this architecture, sharing legacy datasets becomes simple. In essence, Databricks Lakehouse Federation presents a compelling solution for easily sharing legacy datasets, bridging the gap between your current Hive Metastore and the future of Unity Catalog.
+
+Further reading: 
+
+Setup Lakehouse Federation | AWS | GCP
+Introducing Lakehouse Federation
+How To Setup Your First Federated Lakehouse 
+Lakehouse Federation for Databricks "
+"The article discusses how to use DeepSpeed Distributor on Databricks to reduce GPU memory requirements when training large language models. DeepSpeed Distributor simplifies resource configurations and management, making it easier to train large models with less memory. The article explains the key features of DeepSpeed, such as model precision settings and optimizer and gradient settings, and demonstrates how to trigger a DeepSpeed training job in Databricks. It also provides tips and tricks for estimating memory requirements, setting Hugging Face caches, configuring MLflow with DeepSpeed, integrating Tensorboard, using gradient accumulation, gradient checkpointing, and finding the optimal configuration. Overall, the article provides a comprehensive guide to using DeepSpeed Distributor on Databricks for efficient training of large language models.","1. Overcoming GPU bottlenecks a. The major bottleneck in deep learning training is the amount of RAM per GPU b. Common GPUs and their instance types and available RAM
+2. Understanding DeepSpeed and the DeepSpeed Distributor a. DeepSpeed is a framework that can reduce GPU memory requirements by up to 4x b. 3. Setting up and triggering DeepSpeed jobs is complex, but Databricks simplifies the process c. Key features of DeepSpeed for developing large language models (LLM) and computer vision (CV) applications
+4 Model Precision Settings a. By default, model weights are stored as 32-bit floating point b. DeepSpeed includes optimizations that allow training at 16-bit floating point, reducing model size c. Two types of 16-bit precision: fp16 and bfloat16
+5. Optimizer and Gradient Settings a. ZeRO is the core of DeepSpeed, reducing redundant weights, states, and gradients b. ZeRO has three stages, with increasing memory savings c. Offload can be used to store optimizer states, gradients, and parameters in CPU RAM or NVMe drives
+6. How to trigger a DeepSpeed training job a. Trigger a function written within the notebook context b. Trigger an external Python script
+7. Tricks and Tips to be productive a. Estimating Memory Requirements b. Setting Hugging Face Caches c. Configuring MLflow with DeepSpeed d. 8. Tensorboard Integration e. Gradient Accumulation f. Gradient Checkpointing g. Finding the optimal configuration
+9. Monitoring and debugging a. Utilizing the Metrics and Driver logs tabs in the Databricks web UI b. Monitoring hardware utilization and system logs c. Reviewing driver logs for additional details
+10. Conclusion","We introduce DeepSpeed, a framework that can reduce GPU memory requirements by up to 4x, and explain how to set up and trigger DeepSpeed jobs using Databricks","The GPU shortage is real, and being able to scale up and optimize the training of large language models will help accelerate the delivery of an AI project. DeepSpeed is a framework that can reduce GPU memory requirements by up to 4x. Setting up and triggering DeepSpeed jobs is complex, however, and Databricks is here to help. That is why we are pleased to announce the release of the new DeepSpeed Distributor, a fully open source extension to Spark that builds upon our work with both the TorchDistributor and the spark-tensorflow-distributor, Now you can trigger DeepSpeed powered training jobs with a simple PySpark function - the hassles of cluster configuration, communications and monitoring are all handled for you! In this article, we review the key features of DeepSpeed that you will need to advance your AI journey in the development of large language models (LLM) and computer vision (CV) applications.
+
+Table of Contents
+Overcoming GPU bottlenecks
+Understanding DeepSpeed and the DeepSpeed Distributor
+Model Precision Settings
+Optimizer and Gradient Settings
+How to trigger a DeepSpeed training job
+Triggering a function from notebooks
+Triggering a Python script
+Tricks and Tips to be productive
+Estimating Memory Requirements
+Setting Hugging Face Caches
+Configuring MLflow with DeepSpeed
+Tensorboard Integration
+Gradient Accumulation
+Gradient Checkpointing
+Finding the optimal configuration
+Monitoring and debugging
+Conclusion
+Overcoming GPU bottlenecks
+The major bottleneck in deep learning training today is the amount of RAM per GPU - they simply don’t have a lot of it.
+
+GPU Model
+
+VRAM (GB)
+
+AWS
+
+Azure
+
+T4
+
+16
+
+g4dn
+
+NCasT4_v3
+
+V100
+
+16
+
+p3
+
+NC_v3
+
+V100
+
+32
+
+p3dn
+
+NDv2
+
+A10
+
+24
+
+g5
+
+NVadsA10_v5
+
+A100
+
+40
+
+p4d
+
+NDasrA100_v4
+
+A100
+
+80
+
+p4de
+
+NDm_A100_v4
+
+H100
+
+80
+
+p5
+
+NDm_H100_v5
+
+Common GPUs - their instance types and available RAM
+
+To address this issue, two main paradigms have emerged: data parallel and model parallel training.
+
+Data parallel training involves splitting the data across multiple GPUs. In this scenario, each GPU needs to contain a full copy of the model and training artifacts (the optimizer state and gradients), greatly reducing available RAM for training data.
+
+Data Parallel Training - We still need all the Training Artifacts and the Full Model which takes up most of our VRAM
+Data Parallel Training - We still need all the Training Artifacts and the Full Model which takes up most of our VRAM
+
+On the other hand, model parallel training splits the model itself across multiple GPUs, freeing up RAM on each machine.  In this scenario a new bottleneck appears - the available network bandwidth between the distributed GPUs.
+
+Model Parallel Training - We have now split the model up but that means we need to get the data through all three GPUs to get a full forward and backward pass
+Model Parallel Training - We have now split the model up but that means we need to get the data through all three GPUs to get a full forward and backward pass
+
+In the model parallel paradigm, the memory efficiency of DeepSpeed can be leveraged to allow us to train larger models without incurring exorbitant costs.
+
+Understanding DeepSpeed and the DeepSpeed Distributor
+The DeepSpeed library consists of three key modules: the training of, inference with and compression of deep learning models. In this article we focus on model training. 
+
+To understand how DeepSpeed fits and how to configure it, we must first unpack the training process. There are two constraints when training large language models and their computer vision cousins: the input / output speeds for loading training data and the amount of memory available per GPU card. For data loading optimizations, refer to our collaboration with Hugging Face and the Torchdelta extension.
+
+For model training, there are three main memory hogs: the model and its weights, the optimizer state and gradients, and the size of the training data. To reduce training time, we want to maximize the amount of data we load on the GPU. This requires configuring DeepSpeed to limit the RAM footprint of the model, optimizer and gradients. Let’s walk through those settings now.
+
+Model Precision Settings
+To ensure a high quality chat experience for end users of our LLM applications we want to use the largest models we can. By default, model weights are stored as 32-bit floating point, so even 7 billion parameter models take up all the RAM on smaller GPUs and a considerable chunk on larger ones. DeepSpeed includes optimizations that allow us to train at 16-bit floating point instead, greatly reducing model size. When using 16-bit floating point precision, a good rule of thumb is that an average model requires approximately 2x its number of parameters (billions) in GPU RAM (GB) rather than 4x with the default fp32. Whilst it is possible to use lower precision, these techniques are still more experimental. 
+
+There are two types of 16-bit precision to choose from: the normal fp16 and bfloat16. When working with newer Nvidia GPUs (A10/A100/H100) it is recommended to use bfloat16, which can be set as follows in the JSON config file.
+
+""bf16"": { 
+   ""enabled"": true 
+}
+Older GPUs do not support bfloat16 and hence we will fallback to the older less efficient fp16 format, shown below.
+
+""fp16"": { 
+        ""enabled"": ""auto"", 
+        ""loss_scale"": 0, 
+        ""loss_scale_window"": 1000, 
+        ""initial_scale_power"": 16, 
+        ""hysteresis"": 2, 
+        ""min_loss_scale"": 1 
+    }
+We recommend using bfloat compatible GPUs where possible. It has been noted that fp16 training can be unstable and may require manual intervention during the training to change learning rates and avoid NaN losses which is partially why fp16 also has so many additional settings.; For more details check the documentation and Nvidia's guide on mixed precision training
+
+Optimizer and Gradient Settings
+The next area that we can look for memory savings is with the optimizer and gradient calculations. This can be done through leveraging the Zero Redundancy Optimizer (ZeRO) settings. ZeRO is the core of DeepSpeed and was first introduced in the research paper. The authors noted that a lot of the weights, states and gradients stored during training are redundant, allowing for them to be partitioned across GPUs and even onto CPU and disk. This does result in the need to move data around and increases network traffic, but the savings in GPU RAM are worth it.
+
+ZeRO has three settings:
+
+Stage 1: Optimizer State Partitioning 
+Stage 2: Optimizer and Gradient Partitioning 
+Stage 3: Optimizer, Gradient and Parameter Partitioning 
+Beyond stage 3 we can also offload calculations onto the CPU and attached storage, though this can come with hefty performance constraints. For an understanding of the possible space savings, see the below diagram from the original ZeRO paper where Stage 1 = Pos, Stage 2 = Pos+g and Stage 3 = Pos+g+p.
+
+brian_law_0-1707660628666.png
+
+As we go from Stages 1 to 3, we can see that we get more and more VRAM savings. Whilst the formulas for calculating VRAM consumption are a little complex, here is a visualization of estimated VRAM requirements per GPU. 
+
+Calculations assume 4 GPUs we can reduce further with
+Calculations assume 4 GPUs we can reduce further with
+
+Model Parameter Count (B)
+
+Base VRAM (GB)
+
+ZeRo 1 (GB)
+
+ZeRo 2 (GB)
+
+ZeRo 3 (GB)
+
+7
+
+112
+
+49
+
+38.5
+
+28
+
+13
+
+208
+
+91
+
+71.5
+
+52
+
+34
+
+544
+
+238
+
+187
+
+136
+
+70
+
+480
+
+210
+
+165
+
+120
+
+Beyond ZeRo 3, it is also possible to offload the optimizer states, gradients and parameters into either CPU RAM or attached NVMe drives. Whilst offload will cause a performance hit, it can allow small setups to train much larger models.
+
+Offload can be set in the JSON configuration:
+# cpu offload
+""offload_optimizer"": {""device"": ""cpu""},
+""offload_param"": {""device"": ""cpu""},
+# gpu offload
+""offload_optimizer"": {""device"": ""nvme"", 
+    ""nvme_path"": ""/local_disk0/optimizer""},
+
+
+""offload_param"": {""device"": ""nvme"",
+""nvme_path"": ""/local_disk0/param""}
+On Databricks clusters, /local_disk0 is the mount path for direct attached storage that you can use as a temporary cache. Offload also requires the installation of libaio-dev, an OS-level library that will require installing via init script (AWS/Azure). When using offload, it is important to make sure that there is sufficient CPU RAM and NVMe storage. It is recommended to set the autoscale local storage setting when creating your cluster if you will use NVMe storage.
+
+brian_law_0-1707660898074.png
+
+How to trigger a DeepSpeed training job
+Now that we understand the workings of key DeepSpeed configs, we can look at how to code and launch our pipelines. The beauty of the design around the DeepSpeed Distributor is that it doesn't require extensive code changes in order to leverage it within your workflows. Just like the TorchDistributor, the DeepSpeed flavor can be utilized in two ways:
+
+Trigger a function written within the existing notebook context 
+Trigger an external Python script
+Triggering a function from notebooks
+In this example, we assume that the training function is called train and it accepts the arguments training_arguments and dataset.
+
+Running on single node:
+from pyspark.ml.deepspeed.deepspeed_distributor import DeepspeedTorchDistributor
+
+distributor = DeepspeedTorchDistributor(numGpus=1, nnodes=1, localMode=True, 
+                                        useGpu=True, 
+deepspeedConfig = deepspeed_dict)
+
+completed_trainer = distributor.run(train, training_arguments, dataset)
+Running in distributed fashion:
+
+from pyspark.ml.deepspeed.deepspeed_distributor import DeepspeedTorchDistributor
+
+distributor = DeepspeedTorchDistributor(numGpus=4, nnodes=2, localMode=True, 
+                                        useGpu=True, 
+deepspeedConfig = deepspeed_dict)
+
+completed_trainer = distributor.run(train, training_arguments, dataset)
+To elaborate on the parameters available to DeepSpeedTorchDistributor:
+
+numGpus: number of GPUs per node
+nnodes: number of nodes to train on
+localMode: if True, trains on the driver node only (for single node cluster) if False will train on the workers
+useGpu: whether to train using GPUs
+deepspeedConfig: JSON file with all configuration parameters
+While useGPU is available, it is worth mentioning that DeepSpeed should ideally be used with GPUs.
+
+Triggering a Python script
+In addition to executing a train function defined in a notebook, it is possible to use DeepspeedTorchDistributor to load and execute a training script by specifying the path to the Python file and passing command line arguments to it.
+
+Running on single node:
+from pyspark.ml.deepspeed.deepspeed_distributor import DeepspeedTorchDistributor
+
+distributor = DeepspeedTorchDistributor(numGpus=4, nnodes=1, localMode=False, 
+                                        useGpu=True, 
+deepspeedConfig = deepspeed_dict)
+
+completed_trainer = distributor.run('<path_to_file>/train.py', ""--var1 value1"", ""--var2 value2"")
+Running in distributed fashion:
+from pyspark.ml.deepspeed.deepspeed_distributor import DeepspeedTorchDistributor
+
+distributor = DeepspeedTorchDistributor(numGpus=4, nnodes=2, localMode=False, 
+                                        useGpu=True, 
+deepspeedConfig = deepspeed_dict)
+
+completed_trainer = distributor.run('<path_to_file>/train.py', ""--var1 value1"", ""--var2 value2"")
+Tricks and Tips to be productive
+Now that you understand the key DeepSpeed configs and how to launch your training job, we will cover some other considerations that you should be aware of to ensure the smoothest possible experience.
+
+Estimating Memory Requirements
+Managing and understanding the requirements to fine tune a particular model can be hard. There are a few helpful rules of thumb first to assess the viability of our training job before consuming any GPU resources. 
+
+As discussed, the number of parameters in a model will dictate the amount of VRAM it and its training states will take. If we are training with fp16 or bfloat16 we can use a simple formula: 
+
+2 X number of params (B) = VRAM required (GB)
+
+Thus, a 7 billion parameter model like llama_v2_7b will take approximately 14GB VRAM to load in bfloat16 format. 
+
+Next, we need to factor in the type of fine-tuning that we are doing. The memory footprint for model weights, weight gradients, adapter weights and optimizer state will depend on whether we are using LoRa, QLoRa, or full fine-tuning (excluding activations / input gradients).  The total memory usage per parameter is summarized in the table below.
+
+Tuning Method
+
+Weights
+
+Weight Gradients
+
+Optimizer State
+
+Adapter Weights
+
+Total
+
+Full Fine-Tuning
+
+2 bytes
+
+2 bytes
+
+8 bytes
+
+N/A
+
+12 bytes/parameter
+
+LoRa Fine-Tuning
+
+16 bits
+
+~0.4 bits
+
+~0.8 bits
+
+~0.4 bits
+
+17.6 bits/parameter
+
+QLoRa Fine-Tuning*
+
+4 bits
+
+~0.4 bits
+
+~0.8 bits
+
+~0.4 bits
+
+5.6 bits/parameter
+
+*Note that currently QLoRa and DeepSpeed ZeRo 3 are incompatible.
+
+Combining our formula for model size memory requirements with the additional fine-tuning memory requirements, we can estimate the total RAM required for a training run:
+
+Model
+
+Model Size (fp32)
+
+Model Size (bfloat16)
+
+Full Finetune Requirements (bfloat16)
+
+LoRa Requirements
+
+QLoRa Requirements
+
+llama_v2_7b
+
+28GB
+
+~14GB
+
+~84GB
+
+~15.4GB
+
+~4.55GB
+
+llama_v2_13b
+
+52GB
+
+~25GB
+
+~150GB
+
+~28.6GB
+
+~8.45GB
+
+MNPT_7b
+
+28GB
+
+~14GB
+
+~84GB
+
+~15.4GB
+
+~4.55GB
+
+Now that we size up the viability of our job with our available resources, we can look into the rest of the training setup.
+
+Setting Hugging Face Caches
+When using Hugging Face libraries it is important to understand how it caches. Caching can generally be set at an individual item level (a specific call to dataset or model), at a library level (for all dataset or transformer objects) or at a global level (for all Hugging Face libraries).
+
+There is also a hierarchy in that setting a cache when instantiating an item will override the global default. All the Hugging Face libraries default to ~/.cache which is the root OS folder on databricks nodes. This can quickly result in the root OS folder filling up and causing the cluster to crash. To alleviate pressure on root, it is recommended to set the cache directories to either a DBFS directory or /local_disk0 path. This can be configured through environment variables to ensure they are set prior to instantiating your model and dataset classes.
+
+Configuring environment variables:
+import os
+
+# Setting Hugging Face cache to /local_disk0
+os.environ['HF_HOME'] = '/local_disk0/hf_home'
+os.environ['HF_DATASETS_CACHE'] = '/local_disk0/hf_home'
+os.environ['TRANSFORMERS_CACHE'] = '/local_disk0/hf_home'
+Whilst caching on DBFS guarantees persistence even after clusters get shut down, caching on local_disk0 can offer better performance for frequently accessed data like a Hugging Face dataset. A rule of thumb is to cache transformer models to DBFS since they are loaded only once, while datasets can be cached to `local_disk0`.
+
+Configuring MLflow with DeepSpeed
+MLflow has strong support for transformers, and we recommend installing the latest version (2.10.1) for the best experience. It is beyond this blog to explain the basic concepts of MLflow, but there are a few tricks to using it with DeepSpeed that we will cover. 
+
+When operating in a standard notebook environment, the Python session is initiated with a login token for MLflow. When running DeepSpeed, however, individual GPUs will each have a separate Python process that does not inherit these credentials. To proceed, we can save these parameters to Python variables using dbutils, then assign them to environment variables within the function that DeepspeedTorchDistributor will distribute.
+
+Getting and settings Databricks host, token:
+# logging host and token
+import os
+
+browser_host = dbutils.notebook.entry_point.getDbutils().notebook().getContext().browserHostName().get()
+db_host = f""https://{browser_host}""
+
+db_token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+
+os.environ['DATABRICKS_HOST'] = db_host
+os.environ['DATABRICKS_TOKEN'] = db_token
+We also need to create and set the MLflow experiment, as only the primary notebook process can automatically create new experiments. Finally, when doing our MLflow logging, we should ensure that it is run only from the head node of the training process. The head node is the one that has global_rank 0 in Nvidia parlance. 
+
+Getting GPU rank with PyTorch
+global_rank = torch.distributed.get_rank()
+Tensorboard Integration
+Whilst MLflow provides logging and monitoring capabilities for visualizing training runs, Tensorboard can still be useful for monitoring your run, and can be launched in Databricks by running the following commands.
+
+Launching Tensorboard in Databricks Notebooks:
+%load_ext tensorboard
+# This sets up our tensorboard settings
+experiment_log_dir = <log-directory>
+%tensorboard --logdir $experiment_log_dir
+# This starts Tensorboard
+In order to use Tensorboard during a training run, execute this code in its own notebook. Keep in mind that when writing logs to DBFS the results may not be viewable in Tensorboard until the run is finished.
+
+Gradient Accumulation
+If we didn’t have GPU VRAM constraints then we would set larger batches to get through our training data faster. Due to VRAM constraints we commonly are restricted to batch sizes in the single digits. Gradient accumulation tells the algorithm to avoid doing a weight update till it has gone through sufficient data records. We can hence reduce our VRAM requirements at a small cost to performance.
+
+Setting gradient accumulation in the DeepSpeed JSON config:
+""gradient_accumulation_steps"": 4
+Gradient Checkpointing
+As we discussed earlier, the gradient calculations during a training run are one major source of VRAM consumption. By default, we store all the activation values for our network on the forward pass since they will be used for the backward pass. Gradient checkpointing strategically stores only a portion of the activations. It does mean that inevitably some will have to be recalculated to slow down our training loop (for more details see here). 
+
+Turning on gradient checkpointing:
+model.gradient_checkpointing_enable()
+In our experiments, using gradient checkpointing with ZeRo 3 offload on 4x A10Gs saved approximately 6GB VRAM per GPU.
+
+Finding the optimal configuration
+The goal of configuring your DeepSpeed training loop is to have it run as efficiently as possible. One of the most frustrating things that can happen is an out-of-memory error deep into your training run.
+
+Typical out-of-memory (OOM) exception on GPUs
+Typical out-of-memory (OOM) exception on GPUs
+
+To limit the chance of this happening, we recommend following these steps to establish an optimal configuration:
+
+Estimate your memory requirements using the table above
+For model precision, use bfloat16
+For optimizer and gradient settings, use ZeRo 3
+Try a training run and see how it goes. If you find yourself running into out-of-memory issues, progressively add offload and set gradient accumulation steps and turn on gradient checkpointing. The training process may run more slowly, but it will be more likely to complete.
+
+Monitoring and debugging
+The best way to monitor and debug DeepSpeed training runs is to look at the Metrics and Driver logs tabs in the Databricks web UI:
+
+Find hardware utilization metrics and system logs from the Cluster UI
+Find hardware utilization metrics and system logs from the Cluster UI
+
+The metrics tab has separate dropdowns for hardware settings, including GPU and CPU utilization.
+GPU utilization metrics in Databricks
+GPU utilization metrics in Databricks
+
+Load and CPU utilization metrics in Databricks
+Load and CPU utilization metrics in Databricks
+
+The driver logs will give us the same debug details that would appear in a terminal session should the excerpts displayed in the notebook prove insufficient.
+
+Additional details in driver logs
+Additional details in driver logs
+
+Conclusion
+The DeepSpeed Distributor on Databricks marks a pivotal advancement in efficiently training large language models by significantly reducing GPU memory requirements. It simplifies resource configurations and management, enabling scalable and optimized AI project development.  Try it out on Databricks today using the code found here."
+"The article discusses how to use the EXECUTE IMMEDIATE statement in Databricks to compose SQL out of SQL operations and pass session state via SQL variables. It explains the syntax, the types of statements that can be run, statement parameters, where the results go, and how to use session variables. The article also provides examples of using EXECUTE IMMEDIATE to execute various SQL statements, including DML, DDL, and queries, and demonstrates how to use named and unnamed parameters. Overall, the article provides a comprehensive guide to using EXECUTE IMMEDIATE in Databricks for efficient and secure SQL execution.","1a. Motivation
+In Databricks, there are several ways to compose and execute queries, including using the DataFrame API, using a language like Python or Scala to glue together a SQL string, and using spark.sql() to pass different values to a parameterized SQL statement string.
+However, these solutions require using a language outside of SQL to build the query.
+EXECUTE IMMEDIATE allows users to build queries natively in SQL.
+1b. A concrete problem: Finding PRIMARY KEY violations
+Given a set of Delta tables in Unity Catalog with primary keys, and given only the name of the table as input, the task is to generate and execute a query that returns all the duplicate keys in a table.
+To do this, the query needs to run against the Information Schema to find the list of columns composing the primary key, collect the list of columns, compose a query that groups by the key columns and selects only those with a count greater one, and execute this query.
+2a. Binding in the ""input""
+A variable is needed to hold the table name, which has three parts: catalog, schema, and name.
+In this example, the name is hardcoded, but it can be bound in using widgets in a notebook.
+2b. Collecting the primary key columns
+Two tables in the Information Schema are used to find the primary key columns: TABLE_CONSTRAINTS and CONSTRAINT_COLUMN_USAGE.
+TABLE_CONSTRAINTS tells us what constraints exist on the table and what their types are, and CONSTRAINT_COLUMN_USAGE tells us which columns a given constraint depends on.
+An array of primary key columns is declared and collected using a SELECT statement.
+2c. Building the query
+The primary key column array is turned into a comma separated list using a lambda function.
+The query string is built using the table name and primary key columns.
+2d. Run it!
+The query is executed using the EXECUTE IMMEDIATE statement in DBR 14.3.
+3a. EXECUTE IMMEDIATE tear down: EXECUTE IMMEDIATE can be used to run any SQL statement, including DML, DDL, grants, revokes, and queries.
+b. Parameterized queries can be used to prevent SQL injection.
+c. The results of the query can be returned or assigned to a list of session variables.","Exploring the use of EXECUTE IMMEDIATE in Databricks to compose and execute SQL queries, including parameterization and handling results","Motivation
+In Databricks, you have many means to compose and execute queries. You can:
+
+Incrementally build a query and execute it using the DataFrame API
+Use Python, Scala, or some supported other language to glue together a SQL string and use spark.sql() to compile and execute the SQL
+In a variation of the above, you can also protect against SQL injection by using spark.sql() to pass different values to a parameterized SQL statement string.
+All these solutions, however, require you to use a language outside of SQL to build the query.
+
+If you prefer Python or Scala, this may be fine, but if you are into SQL you’re probably looking for a native solution. EXECUTE IMMEDIATE allows you to do just that.
+
+Note: You can find a notebook with all the SQL here.
+
+A concrete problem: Finding PRIMARY KEY violations
+Note: PRIMARY KEY is Delta Tables feature, and the INFORMATION SCHEMA is a Unity Catalog feature.
+
+Given a set of Delta tables in Unity Catalog with primary keys, and given only the name of the table as input:
+
+Generate and execute a query that returns all the duplicate keys in a table.
+
+What do we need to pull this of?
+
+We need to run queries against the Information Schema to find the list of columns composing the primary key
+We need to collect the list of columns, so we can use it in a GROUP BY
+We need to compose a query that then groups by the key columns and selects only those with a count greater one.
+We finally need to execute this query.
+But can we do all this without leaving SQL?
+Using session variables as glue we certainly can!
+
+Let’s get started.
+
+Binding in the ""input""
+First, we need a variable to hold the table name. Remember that a table name has three parts:
+
+DECLARE tableId STRUCT<catalog STRING, schema STRING, name STRING>;
+Here, for simplicity, I’m going to hardcode the name, but of course you can bind it in using widgets in a notebook.
+
+SET VAR table = named_struct('catalog', current_catalog(),
+                             'schema' , current_schema() ,
+                             'name'   , 'persons'        );
+Collecting the primary key columns
+Now we have hunt for the primary key columns. Two tables are in play here:
+
+TABLE_CONSTRAINTS
+tells us what constraints exist on the table and what their types are.
+So we need to find the name of the constraint that relates to the primary key.
+CONSTRAINT_COLUMN_USAGE
+tells us which columns a given constraint depends on.
+That’s all we need. We don’t need to know the column types, the order of the key columns, or anything else more detailed. 
+
+DECLARE pkColumns ARRAY<STRING>;
+SET VAR pkColumns =
+  (SELECT array_agg(ccu.column_name)
+     FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS tc
+     NATURAL JOIN INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE AS ccu
+     WHERE tableId.catalog    = tc.table_catalog
+       AND tableId.schema     = tc.table_schema
+       AND tableId.name       = tc.table_name
+       AND tc.constraint_type = 'PRIMARY KEY'); 
+Let’s be nice and throw in some error handling:
+
+SELECT CASE WHEN array_size(pkColumns) == 0
+            THEN raise_error('No primary key found for: `' || tableId.catalog || '`.`' || tableId.schema || '`.`' || tableId.name || '`')
+       END;
+Building the query
+Now it’s time to compose the query. We need to turn the primary key column array into a comma separated list. Lambda functions are great for this sort of work.
+
+DECLARE queryStr STRING;
+SET VAR queryStr =
+  'SELECT ' || aggregate(pkColumns, '', (list, col) -> list || col || ', ') || ' count(1) AS num_dups '
+  '  FROM `' || tableId.catalog || '`. `' || tableId.schema || '`. `' || tableId.name || '` '
+  '  GROUP BY ALL HAVING COUNT(1) > 1';
+Run it!
+Now all that’s left is to execute the query. We do this by using the new EXECUTE IMMEDIATE statement in DBR 14.3.
+EXECUTE IMMEDIATE takes a STRING literal or a variable, treats it as a query to compile and runs it.
+
+EXECUTE IMMEDIATE queryStr;
+[USER_RAISED_EXCEPTION] No primary key found for: `main`.`srielau`.`t` SQLSTATE: P0001
+Oh, well, I guess we need a table:
+
+SET CATALOG main;
+SET SCHEMA srielau; 
+
+CREATE TABLE persons(firstname STRING NOT NULL, lastname STRING NOT NULL, location STRING);
+ALTER TABLE persons ADD CONSTRAINT persons_pk PRIMARY KEY (firstname, lastname);
+INSERT INTO persons VALUES
+  ('Tom'      , 'Sawyer'      , 'St. Petersburg'       ),
+  ('Benjamin' , 'Bluemchen'   , 'Neustadt'             ),
+  ('Benjamin' , 'Bluemchen'   , 'Neustaedter Zoo'      ),
+  ('Emil'     , 'Svensson'    , 'Loenneberga'          ),
+  ('Pippi'    , 'Longstocking', 'Villa Villekulla'     ),
+  ('Pippi'    , 'Longstocking', 'Kurrekurredutt Island');
+Next try:
+
+EXECUTE IMMEDIATE queryStr;
+firstname      lastname num_dups
+---------  ------------ --------
+Benjamin   Bluemchen           2
+Pippi      Longstocking        2
+Nice!
+
+Let's look into EXECUTE IMMEDIATE in more detail.
+
+EXECUTE IMMEDIATE tear down
+Having hopefully sufficiently motivated the use of EXECUTE IMMEDIATE let's dive deeper into what it can do.
+
+The syntax is pretty straight forward:
+
+EXECUTE IMMEDIATE sql_string
+  [ INTO var_name [, ...] ]
+  [ USING { arg_expr [ AS ] [alias] } [, ...] ]
+What statements can be run?
+sql_string must be a string literal or a session variable of a string type. There are no limitations about which SQL statement you can run, except that you cannot execute an EXECUTE IMMEDIATE. So you can run a DML statement:
+
+SET VAR queryStr = 'INSERT INTO persons'
+                   ' VALUES (\'Josefine\', \'Mausekind\', \'Sprotten vor dem Wind\')';
+EXECUTE IMMEDIATE queryStr;
+num_affected_rows num_inserted_rows
+----------------- -----------------
+                1                 1
+
+SET VAR queryStr = 'UPDATE persons SET location = \'Leuchtturm Josefine\''
+                   ' WHERE firstname =\'Josefine\' AND lastname =\'Mausekind\'';
+EXECUTE IMMEDIATE queryStr;
+num_affected_rows
+-----------------
+                1
+
+EXECUTE IMMEDIATE 'DELETE FROM persons WHERE location = \'Leuchtturm Josefine\'';
+num_affected_rows
+-----------------
+                1
+Or you can do DDL:
+
+EXECUTE IMMEDIATE 'ALTER TABLE persons ADD COLUMN dob DATE';
+You can do grants and revokes:
+
+EXECUTE IMMEDIATE 'GRANT MODIFY ON TABLE persons TO `alf@melmak.et`';
+and of course queries as shows in the example above.
+
+Some users store a their SQL statements in tables, look them up some form of statement ID and execute them using EXECUTE IMMEDIATE.
+
+Statement Parameters
+Obviously you can compose any SQL statement using the sql_string. However it can be advantageous to parameterize the string just like you want to parameterized SQL statements in Scala or Python when executing spark.sql(). The purpose is to provide values, often coming directly from the end user without risking SQL injection.
+
+EXECUTE IMMEDIATE supports both named and unnamed parameters:
+
+EXECUTE IMMEDIATE 'SELECT location FROM persons WHERE firstname = ? AND lastname = ?'
+  USING 'Tom', 'Sawyer';
+location
+--------------
+St. Petersburg
+
+EXECUTE IMMEDIATE 'SELECT location FROM persons WHERE firstname = :first AND lastname = :last'
+  USING 'Tom' AS first, 'Sawyer' AS last;
+location
+--------------
+St. Petersburg 
+ Of course you can use session variables:
+
+DECLARE queryStr = 'SELECT location FROM persons WHERE firstname = ? AND lastname = ?';
+DECLARE first = 'Tom';
+DECLARE last = 'Sawyer';
+
+EXECUTE IMMEDIATE queryStr USING first AS first, last AS last;
+location
+--------------
+St. Petersburg 
+
+SET VAR queryStr = 'SELECT location FROM persons WHERE firstname = :first AND lastname = :last';
+EXECUTE IMMEDIATE queryStr USING last AS last, first AS first;
+location
+--------------
+St. Petersburg 
+You can also use variables directly instead of using formal parameter passing. This may be considered rather sloppy.
+
+SET VAR queryStr = 'SELECT location FROM persons WHERE firstname = first AND lastname = last';
+EXECUTE IMMEDIATE queryStr;
+location
+--------------
+St. Petersburg  
+Where do the results go?
+By default EXECUTE IMMEDIATE will return the same results as the SQL Statement passed to it. For queries that is the query result. For INSERT statement it is the meta data:
+
+EXECUTE IMMEDIATE 'INSERT INTO persons(firstname, lastname, location)  (?, ?, ?)'
+  USING 'Bibi', 'Blocksberg', 'Neustadt';
+num_affected_rows num_inserted_rows
+----------------- -----------------
+                1                 1
+But for queries only there is another options. If the query returns at most one row you can instruct EXECUTE IMMEDIATE to assign the result to a list of session variables.
+
+DECLARE location STRING;
+SET VAR first = 'Emil';
+EXECUTE IMMEDIATE 'SELECT lastname, location FROM persons WHERE firstname = ?'
+   INTO last, location
+   USING first;
+SELECT last, location;
+last     location
+-------- -----------
+Svensson Loenneberga
+If the query returns no rows NULL is assigned:
+
+EXECUTE IMMEDIATE 'SELECT lastname, location FROM persons WHERE firstname = ?'
+   INTO last, location
+   USING 'Huckleberry';
+last location
+---- --------
+null     null
+If there is more than one row EXECUTE IMMEDIATE returns an error:
+
+EXECUTE IMMEDIATE 'SELECT lastname, location FROM persons WHERE firstname = ?'
+   INTO last, location
+   USING 'Benjamin';
+[ROW_SUBQUERY_TOO_MANY_ROWS] More than one row returned by a subquery used as a row. SQLSTATE: 21000
+Conclusion
+EXECUTE IMMEDIATE is a powerful new statement introduced in Databricks Runtime 14.3. It allows you to compose SQL out of SQL operations and pass session state via SQL variables. This allows for linear scripting in SQL which otherwise would have required you to utilize a host language such as Python.
+
+Related
+Notebook with examples above
+Blog: SQL Session Variables: Stash your state, and use it, too. 
+Blog: Parameterized queries with PySpark 
+Blog: New built in functions and higher order functions in Apache Spark
+Blog: Working with nested data using higher order functions in Databricks with SQL
+SQL Reference: EXECUTE IMMEDIATE
+SQL Reference: Variables 
+SQL Reference: Parameter Markers 
+SQL Reference: Information schema "
+"When you use Pandas UDFs, you can't pass parameters to your function by default. It's challenging to do things like object-oriented programming or hyperparameter tuning on Pandas UDFs. As a Databricks customer, I might have legacy Pandas code that I'd like to run on Databricks. How can I pass parameters to my Pandas UDFs in order to scale out their processing across a Spark cluster with dynamic parameters? I propose the cleanest solution is by using closures that accept your parameters and return the appropriately configured Pandas UDF function","1. Introduction to Pandas UDFs
+    a. Explanation of Pandas UDFs and their use cases
+    b. Example of using Pandas UDFs with a simple function
+2. Passing Parameters to Pandas UDFs Functions
+    a. Problem: Functions with parameters are not supported by Pandas UDFs
+        - Example: Error when passing a parameter to applyInPandas for normalization
+    b. Solution: Using closures to pass parameters
+        - Example: Creating a wrapper function with a parameter
+3. Applications of Passing Parameters to Pandas UDFs
+    a. Hyperparameter tuning
+        - Example: Hyperparameter Tuning with a dynamic Pandas UDF
+    b. Object-oriented programming with a Pandas UDF
+        - Example: Building a class that uses Pandas UDFs with parameters
+4. Conclusion
+    a. Summary of the neat programming trick
+    b. Potential use cases and benefits
+    c. Encouragement to experiment and explore the technique further.",Exploring the use of applyInPandas and Pandas UDFs in Databricks for optimizing and migrating legacy Pandas code and how to pass parameters to these functions using closures,"In the world of data science, there is often a need to optimize or migrate legacy code. In this blog post, we address a common technical challenge faced by many data scientists and engineers - making existing Pandas codebases more scalable and dynamic - by using approaches such as applyInPandas and Pandas UDFs. We’ll walk through a basic Pandas UDF use case, before showing how to pass parameters to applyInPandas and Pandas UDFs using closures. This approach can help you tune your code and make the most of the powerful features offered by Databricks.
+
+What are Pandas UDFs?
+Pandas UDFs (User Defined Functions) are a powerful feature that allows you to apply custom functions to Pandas DataFrame or Series in a vectorized manner. With the help of PyArrow, Pandas UDFs can significantly improve performance compared to using traditional for-loops. The applyInPandas function is a great example of how Pandas UDFs can be used to perform operations on data in a DataFrame or Series. Pandas UDFs can also be defined by using the pandas_udf decorator, which allows you to specify the input and output types of the function. Once defined, the UDF can be applied in parallel across a Spark Dataframe - far faster than the serial operation of a for-loop.
+
+Pandas UDFs Use Cases
+Pandas UDFs can be used for a variety of tasks, such as data cleaning, feature engineering, and data analysis. They’re often used to transition existing Pandas code from a single node environment to a distributed Spark environment, without having to change the logic or libraries being used. Here’s an example of using applyInPandas to normalize the values of a Spark DataFrame for each engine type:
+
+ 
+
+import pandas as pd
+
+
+
+df = spark.createDataFrame(pd.DataFrame({'type': ['turbine', 'turbine', 'propeller', 'turbine', 'propeller', 'propeller'], 'sensor_reading': [10, 7, 25, 12, 29, 36]}))
+
+
+
+def normalize(pdf: pd.DataFrame) -> pd.DataFrame:
+
+   reading = pdf.sensor_reading
+
+   pdf['normalized'] = reading.mean() / reading.std()
+
+   return pdf
+
+
+expected_schema = 'type string, sensor_reading long, normalized long'
+df.groupBy('type').applyInPandas(normalize, expected_schema).show()
+ 
+
+Output:
+
++---------+--------------+----------+
+
+|     type|sensor_reading|normalized|
+
++---------+--------------+----------+
+
+|propeller|            25|         5|
+
+|propeller|            29|         5|
+
+|propeller|            36|         5|
+
+|  turbine|            10|         3|
+
+|  turbine|             7|         3|
+
+|  turbine|            12|         3|
+
++---------+--------------+----------+
+
+Challenge: Passing Parameters to applyInPandas
+What if we want to do some hyperparameter tuning on our Pandas UDF or use a dynamic variable as an input to our function? Unfortunately, passing parameters to applyInPandas is not directly supported. applyInPandas expects a function with a single argument, which is the grouped DataFrame that it will apply the function to. Adding another parameter will throw an error:
+
+ 
+
+# We don't have a way to pass a value like the mean of the whole dataframe - this throws an error
+
+def normalize_plus_value(pdf: pd.DataFrame, value: int) -> pd.DataFrame:
+
+   reading = pdf.sensor_reading
+
+   pdf['normalized'] = value + (reading.mean() / reading.std())
+
+   return pdf
+
+
+
+df.groupBy('type').applyInPandas(normalize_plus_value, 'type string, sensor_reading long, normalized long').show()
+ 
+
+AttributeError: 'tuple' object has no attribute 'sensor_reading'
+
+Solution: Using closures to pass parameters
+One solution to this problem is to use a closure. A closure is a function that has access to variables in its outer (enclosing) function scope. By defining a function inside a closure, you can create a dynamic function that captures the parameters you want to pass to applyInPandas.
+
+Here is an example of using a closure to pass a parameter to an applyInPandas function:
+
+ 
+
+def normalize_with_value(value: int):
+
+   # Returning this function ""injects"" the value into the function we'll use for applyInPandas
+
+   def normalize(pdf: pd.DataFrame) -> pd.DataFrame:
+
+       reading = pdf.sensor_reading
+
+       pdf['normalized'] = value - (reading.mean() / reading.std())
+
+       return pdf
+
+   return normalize
+
+
+
+# Now we can initialize the function with a value inserted
+
+average = df.selectExpr('avg(sensor_reading) as average').collect()[0][0]
+
+dynamic_normalize = normalize_with_value(average)
+
+df.groupBy('type').applyInPandas(dynamic_normalize, 'type string, sensor_reading long, normalized long').show()
+
+ 
+
+Output:
+
++---------+--------------+----------+
+
+|     type|sensor_reading|normalized|
+
++---------+--------------+----------+
+
+|propeller|            25|        14|
+
+|propeller|            29|        14|
+
+|propeller|            36|        14|
+
+|  turbine|            10|        15|
+
+|  turbine|             7|        15|
+
+|  turbine|            12|        15|
+
++---------+--------------+----------+
+
+We can do the same with a Pandas UDF. For the purposes of this demonstration, we’ll pass the hyperparameters for an ARIMA model into a Pandas UDF:
+
+ 
+
+from pyspark.sql.functions import pandas_udf
+
+from statsmodels.tsa.arima.model import ARIMA
+
+
+
+# Fit and run an ARIMA model using a Pandas UDF with the hyperparameters passed in
+
+def create_arima_forecaster(order):
+
+   @pandas_udf(""double"")
+
+   def forecast_arima(value: pd.Series) -> pd.Series:
+
+       model = ARIMA(value, order=order)
+
+       model_fit = model.fit()
+
+       return model_fit.predict()
+
+   return forecast_arima
+
+
+
+# Minimal Spark code - just select one column and add another. We can still use Pandas for our logic
+
+forecast_arima = create_arima_forecaster((1, 2, 3))
+
+df.withColumn('predicted_reading', forecast_arima('sensor_reading')).show()
+
+ 
+
+ 
+
+Applications of Parameters for Pandas UDFs
+Passing parameters to Pandas UDFs can be useful in a variety of scenarios, such as:
+
+Hyperparameter tuning
+Object-oriented programming with applyInPandas - for example, a dynamic feature engineering function in an MLflow Pyfunc model class
+Building complex and dynamic data pipelines
+For example, if we wanted to hyperparameter tune an ARIMA model called from a Pandas UDF, we could use the same approach to pass the various hyperparameter choices:
+
+ 
+
+ 
+
+from hyperopt import hp, fmin, tpe, Trials
+
+from pyspark.ml.evaluation import RegressionEvaluator
+
+
+
+# Define the hyperparameter search space
+
+search_space = {'p': 1, 'd': hp.quniform('d', 2, 3, 1), 'q': hp.quniform('q', 2, 4, 1)}
+
+
+
+# Define the objective function to be minimized
+
+def objective(params):
+
+   order = (params['p'], params['d'], params['q'])
+
+   forecast_arima = create_arima_forecaster(order)
+
+   arima_output = df.withColumn('predicted_reading', forecast_arima('sensor_reading'))
+
+   evaluator = RegressionEvaluator(predictionCol=""predicted_reading"",
+                                   labelCol=""sensor_reading"", 
+                                   metricName=""rmse"")
+
+   rmse = evaluator.evaluate(arima_output)
+
+   return rmse
+
+
+
+# Run the hyperparameter optimization
+
+trials = Trials()
+
+best = fmin(fn=objective, space=search_space, algo=tpe.suggest, max_evals=6, trials=trials)
+
+print('Best hyperparameters: ', best)
+ 
+
+ 
+
+In this example, we're using Hyperopt to automatically measure the most effective configuration of our model. The objective function accepts a set of hyperparameters as input, creates an ARIMA forecaster with those hyperparameters using the create_arima_forecaster function, and applies the forecaster to the input DataFrame using the Pandas UDF forecast_arima. The resulting DataFrame is then evaluated so that the root mean squared error (RMSE) can be returned as the objective function value. In this case, we're searching over values of p, d, and q for the ARIMA model. The hyperparameter search space is defined using Hyperopt's hp function, which allows us to specify the range of values to search over for each hyperparameter. Finally, we use Hyperopt's fmin function to perform the hyperparameter optimization, specifying the objective function, search space, optimization algorithm, and number of evaluations to perform. The resulting optimal hyperparameters are then printed out and can be leveraged for any forecasts moving forward.
+
+It’s useful to note that running Hyperopt for parallel hyperparameter tuning on Databricks Runtime can also be done via SparkTrials in place of standard Hyperopt Trials. SparkTrials automatically distributes each run of the objective function across the Spark cluster and makes it easy to configure your desired parallelism. In fact, SparkTrials is what powers Databricks’ AutoML under the hood!
+
+Conclusion
+In this blog post, we have learned about a neat programming trick for passing parameters to applyInPandas and Pandas UDFs. We have also looked at a viable use case for this tactic, hyperparameter tuning. To explore the theory of this topic further, we encourage you to investigate using Python’s functools partials to accomplish the same goal in a slightly different way. Ultimately, we hope you better understand how to use closures to make legacy or custom Pandas code more dynamic and scalable"
