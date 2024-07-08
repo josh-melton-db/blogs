@@ -1,0 +1,1 @@
+{"save": "QCDJDNZEORLMX.all", "peft": false, "fp16": false, "bf16": false, "int8": false, "fid": false, "rationale": false, "batch_size": 12, "epochs": 1, "gradient_accumulation_steps": 1, "lr": 5e-05, "target": "google/flan-t5-base", "output_dir": "../finetuning_ckpts/QCDJDNZEORLMX.all"}

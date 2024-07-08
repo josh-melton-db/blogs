@@ -1,0 +1,36 @@
+chat_endpoint: databricks-dbrx-instruct
+chat_model_parameters:
+  max_tokens: 500
+  temperature: 0.01
+chat_prompt_template: 'You are a trusted assistant that helps answer questions based
+  only on the provided information. If you do not know the answer to a question, you
+  truthfully say you do not know.  Here is some context which might or might not help
+  you answer: {context}.  Answer directly, do not repeat the question, do not start
+  with something like: the answer to the question, do not add AI in front of your
+  answer, do not say: here is the answer, do not mention the context or the question.
+  Based on this history and context, answer this question: {question}.'
+chat_prompt_template_variables:
+- context
+- question
+chunk_column_name: issue_description_chunk
+chunk_id_column_name: chunk_id
+chunk_overlap: 100
+chunk_size: 300
+chunk_template: '`{chunk_text}`'
+demo_config:
+  assessment_log_output_uc_fqn: josh_melton.generated_rag_demo.rag_chain_model_assessment_log
+  chunk_table: josh_melton.generated_rag_demo.customer_service_tickets_chunked
+  endpoint_name: agents_josh_melton-generated_rag_demo-rag_chain_model
+  inference_table_uc_fqn: josh_melton.generated_rag_demo.`agents-rag_chain_model_payload`
+  model_fqdn: josh_melton.generated_rag_demo.rag_chain_model
+  request_log_output_uc_fqn: josh_melton.generated_rag_demo.rag_chain_model_request_log
+  source_column_name: issue_description
+  source_table: josh_melton.generated_rag_demo.customer_service_tickets
+  synthetic_eval_set_table_uc_fqn: josh_melton.generated_rag_demo.synthetic_eval_set
+  target_schema: generated_rag_demo
+document_source_id: ticket_number
+embedding_endpoint: databricks-bge-large-en
+vector_search_endpoint_name: one-env-shared-endpoint-5
+vector_search_index: josh_melton.generated_rag_demo.customer_service_tickets_index
+vector_search_parameters:
+  k: 3
