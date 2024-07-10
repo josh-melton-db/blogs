@@ -1,10 +1,5 @@
 # Databricks notebook source
-# MAGIC %md
-# MAGIC ## Warning: This notebook is not working yet
-
-# COMMAND ----------
-
-# MAGIC %pip install --upgrade databricks-genai databricks-sdk mlflow
+# MAGIC %pip install --upgrade databricks-genai==1.0.7 databricks-sdk==0.29.0 mlflow==2.14.2
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
