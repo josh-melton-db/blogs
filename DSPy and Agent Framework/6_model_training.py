@@ -4,9 +4,7 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install databricks-genai==1.0.2
-# MAGIC %pip install databricks-sdk==0.27.1
-# MAGIC %pip install "mlflow==2.12.2"
+# MAGIC %pip install --upgrade databricks-genai databricks-sdk mlflow
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
