@@ -22,15 +22,17 @@ demo_config:
   chunk_table: josh_melton.generated_rag_demo.customer_service_tickets_chunked
   endpoint_name: agents_josh_melton-generated_rag_demo-rag_chain_model
   inference_table_uc_fqn: josh_melton.generated_rag_demo.`agents-rag_chain_model_payload`
+  mlflow_run_name: generated_rag_demo
   model_fqdn: josh_melton.generated_rag_demo.rag_chain_model
+  rag_app_name: generated_rag_demo
   request_log_output_uc_fqn: josh_melton.generated_rag_demo.rag_chain_model_request_log
   source_column_name: issue_description
   source_table: josh_melton.generated_rag_demo.customer_service_tickets
   synthetic_eval_set_table_uc_fqn: josh_melton.generated_rag_demo.synthetic_eval_set
   target_schema: generated_rag_demo
 document_source_id: ticket_number
-embedding_endpoint: databricks-bge-large-en
+embedding_endpoint: databricks-gte-large-en
 vector_search_endpoint_name: one-env-shared-endpoint-5
 vector_search_index: josh_melton.generated_rag_demo.customer_service_tickets_index
 vector_search_parameters:
-  k: 3
+  k: 4

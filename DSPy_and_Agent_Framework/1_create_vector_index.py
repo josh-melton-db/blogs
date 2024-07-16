@@ -44,7 +44,7 @@ chunk_table = demo_config.get("chunk_table")
 # COMMAND ----------
 
 # DBTITLE 1,Define Tokenizer Function
-tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-large-en-v1.5")
+tokenizer = AutoTokenizer.from_pretrained("Alibaba-NLP/gte-large-en-v1.5")
 useArrow = check_dbr(spark)
 
 @func.udf(returnType=ArrayType(StringType()), useArrow=useArrow)

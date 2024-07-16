@@ -13,7 +13,6 @@ from databricks import agents
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.serving import EndpointStateReady, EndpointStateConfigUpdate
 from databricks.sdk.errors import NotFound, ResourceDoesNotExist
-from utils.demo import parse_deployment_info, _flatten_nested_params
 import yaml
 w = WorkspaceClient()
 

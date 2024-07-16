@@ -7,19 +7,19 @@ table = "customer_service_tickets"
 text_col_name = "issue_description"
 text_id_name = "ticket_number"
 vector_search_endpoint_name = "one-env-shared-endpoint-5"
-mlflow_run_name = "generated_rag_demo"
-rag_app_name = mlflow_run_name
+# mlflow_run_name = "generated_rag_demo"
+# rag_app_name = mlflow_run_name
 
 # Set to True and provide the domain and categories if you'd like to generate new data. Otherwise, will use default
 generate_data_for_demo = False
 text_domain = "Customer service tickets from a freight, logistics, and delivery company"
-category_ls = ["Delayed Delivery", "Missing Items", "Damaged Package"]
+category_ls = ["Delayed Delivery", "Missing Items", "Damaged Package", "Fruad or Theft"]
 
 # COMMAND ----------
 
-# DBTITLE 1,Set Up Demo
+# DBTITLE 1,Run Demo Setup
 from utils.demo import get_config, save_config, reset_tables, generate_source_data
-config = get_config(catalog, schema, table, text_id_name, text_col_name, vector_search_endpoint_name, mlflow_run_name, rag_app_name)
+config = get_config(catalog, schema, table, text_id_name, text_col_name, vector_search_endpoint_name) # , mlflow_run_name, rag_app_name # TODO: use kwargs
 save_config(dbutils, config)
 
 # COMMAND ----------

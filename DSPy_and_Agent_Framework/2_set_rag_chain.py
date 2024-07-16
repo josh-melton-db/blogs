@@ -41,7 +41,7 @@ vs_index = vs_client.get_index(
 # Turn the Vector Search index into a LangChain retriever
 vector_search_as_retriever = DatabricksVectorSearch(
     vs_index,
-    text_column=rag_config.get("demo_config").get("chunk_column_name"),
+    text_column=rag_config.get("demo_config").get("chunk_column_name"), # TODO: duplicate ways of storing chunk column name
     columns=[
         "category",
         rag_config.get("chunk_column_name"),

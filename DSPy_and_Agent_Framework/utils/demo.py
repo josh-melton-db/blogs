@@ -3,7 +3,7 @@ from databricks.sdk import WorkspaceClient
 import re
 import random
 from pyspark.sql.types import StructType, StructField, StringType
-from pyspark.sql.functions import concat, col, named_struct, lit, array, expr
+from pyspark.sql.functions import concat, col, named_struct, lit, array, expr, regexp_replace, lower
 import os
 from openai import OpenAI
 import requests
@@ -12,7 +12,7 @@ import json
 
 # TODO: reduce number of args - use kwargs, dictionary
 def get_config(catalog, source_schema, source_table_name, source_id_name, source_column_name, vs_endpoint,
-               target_schema=None, num_docs=3, chunk_size_tokens=300, chunk_overlap_tokens=100,
+               target_schema=None, num_docs=4, chunk_size_tokens=300, chunk_overlap_tokens=100,
                embedding_endpoint="databricks-gte-large-en", chat_model="databricks-dbrx-instruct", chat_prompt=None,
                mlflow_run_name="generated_rag_demo", rag_app_name="generated_rag_demo"):
     w = WorkspaceClient()
@@ -89,7 +89,7 @@ def generate_category(chat_model, text_domain, category_ls):
     return category_ls
 
 def generate_categories(chat_model, text_domain, category_ls):
-    while len(category_ls) < 10:
+    while len(category_ls) < 25:
         category_ls = generate_category(chat_model, text_domain, category_ls)
     cleaned_categories = [re.sub(r'[^a-zA-Z\s]', '', category) for category in category_ls]
     return list(set(cleaned_categories))
@@ -104,7 +104,7 @@ def generate_symptoms(chat_model, categories, text_domain):
     symptoms_sets = {}
     for category in categories:
         symptom_ls = []
-        num_documents = random.randint(3, 10)
+        num_documents = random.randint(7, 12)
         for _ in range(num_documents):
             symptom = generate_symptom(chat_model, text_domain, category, symptom_ls)
             symptom_ls.append(symptom)
@@ -115,7 +115,7 @@ def generate_symptoms(chat_model, categories, text_domain):
     return cleaned_symptoms
 
 def generate_document(chat_model, issues, category, document_ls):
-    document_prompt = "Given the issue set {issues}, generate a piece of text reporting the issues in detail. Indicate some relationship to {category}, although not directly. Indicate whether you think there is a potential resolution to the problem. Use an objective, fact-based, expert perspective. Give only the text, in one hundred words or less, no filler, nothing to indicate you're not the expert writing notes, don't explicitly say you were given a category, no lists, only detailed notes, reporting of the issues, and potentially the requested next steps to resolve the issues"
+    document_prompt = "Given the issue set {issues}, generate a piece of text reporting the issues in detail. Indicate some relationship to {category}, although not directly. Indicate whether you think there is a potential resolution to the problem. Use an objective, fact-based, expert perspective. Give only the text, in one hundred words or less, no filler, nothing to indicate you're not the expert writing notes, don't explicitly say you were given a category or restate the category, no lists, only detailed notes and reporting of the issues"
     document = chat_model.predict(document_prompt.format(issues=issues, category=category))
     document_ls.append(document)
     return document_ls
@@ -156,7 +156,11 @@ def generate_source_data(chat_model, text_domain, category_ls, text_col_name, te
     symptoms = generate_symptoms(chat_model, categories, text_domain)
     documents = generate_documents(chat_model, symptoms) 
     df = create_df(spark, documents, text_col_name)
+    df = df.withColumn("issue_description", regexp_replace(col("issue_description"), col("category"), ""))
+    df = df.withColumn("issue_description", regexp_replace(lower(col("issue_description")), lower(col("category")), ""))
+    df = df.withColumn("issue_description", regexp_replace(col("issue_description"), ":", ""))
     df = df.withColumn(text_id_name, expr("substring(md5(cast(rand() as string)), 1, 7)"))
+
     source_table = f"{catalog}.{schema}.{table}"
     df.write.saveAsTable(source_table)
 
@@ -199,24 +203,34 @@ def generate_question(chunk_row, chunk_text_key, model_endpoint, root, token):
     8.Avoid framing question using word "and" that can be decomposed into more than one question.
     9.The question should not contain more than 10 words, make of use of abbreviation wherever possible.
         
-    context: {context}
+    context: {context}"""
 
-    Please return your output as a JSON as follows:
-
-    {{"question": "question for the chunk"}}"""
-
-    system_prompt = "You are an expert at resolving customer issues.  You are also an expert at generating questions that a human would likely ask about specific content from the issues. You pride yourself on your ability to be realistic, yet a bit creative, and you know that a human will evaluate your output, so you put extra effort into following instructions exactly, including only outputing in JSON format as instructed.  You will lose your job if you don't output valid JSON."
+    q_system_prompt = "You are an expert at resolving customer issues.  You are also an expert at generating questions that a human would likely ask about specific content from the issues. You pride yourself on your ability to be realistic, yet a bit creative, and you know that a human will evaluate your output, so you put extra effort into following instructions exactly. Do not use leading numbers. DO NOT REFER TO THE INSTRUCTIONS OR CONTEXT DIRECTLY, DO NOT PROVIDE AN ANSWER."
     client = OpenAI()
     prompt = PROMPT_TEMPLATE.format(context=chunk_row[chunk_text_key])
-    response = client.chat.completions.create(
+    question = client.chat.completions.create(
                 model=model_endpoint,
                 messages=[
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": q_system_prompt},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=1.0
-            )
-    return json.loads(response.choices[0].message.content)
+            ).choices[0].message.content.replace("1. ", "")
+    
+    a_system_prompt = "You are an expert at summarizing customer issues. You are also an expert at synthesizing information into short, numbered lists. You know that a human will evaluate your output, so you put extra effort into following instructions exactly. DO NOT REFER TO THE INSTRUCTIONS OR PROVIDE ANY INFORMATION BESIDES THE ANSWER"
+    prompt = f"""Given the question and the context, provide the answer as concisely as possible. Leverage the context heavily to guide your answer. Use a numbered list like 1. <information> \n2. <information \n3...
+    context: {chunk_row[chunk_text_key]}
+    question: {question}
+    """
+    answer = client.chat.completions.create(
+                model=model_endpoint,
+                messages=[
+                    {"role": "system", "content": a_system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1
+            ).choices[0].message.content
+    return {"question": question, "answer": answer}
 
 def process_one_chunk(row, chunk_text_key, chunk_id_key, root, token):
     MAX_TRIES = 4
@@ -224,14 +238,16 @@ def process_one_chunk(row, chunk_text_key, chunk_id_key, root, token):
     tries = 0
     try: 
         gen_questions = generate_question(row, chunk_text_key, model_endpoint, root, token)
-        while "chunk" in gen_questions["question"] and tries < MAX_TRIES:
+        while "chunk" in gen_questions and tries < MAX_TRIES:
             tries = tries + 1
             gen_questions = generate_question(row, chunk_text_key, model_endpoint, root, token)
-        out_data = {f'{chunk_id_key}': row[chunk_id_key]}
+        out_data = {}
+        out_data["expected_retrieved_context"] = [{"doc_uri": row[chunk_id_key]}]
         out_data["request"] = gen_questions["question"]
+        out_data["expected_response"] = gen_questions["answer"]
         return out_data
     except Exception as e:
-        print(f"failed to parse output for doc `{row[chunk_text_key]}` chunk_id {row[chunk_id_key]}")
+        print(f"failed to parse output for doc {row[chunk_id_key]}\n", e)
 
 def generate_questions(chunks_df, chunk_text_key, chunk_id_key, dbutils):
     NUM_THREADS = 7
@@ -247,7 +263,9 @@ def generate_questions(chunks_df, chunk_text_key, chunk_id_key, dbutils):
         futures = [executor.submit(process_one_chunk, row, chunk_text_key, chunk_id_key, root, token) for row in parsed_json_chunks]
         return [future.result() for future in concurrent.futures.as_completed(futures)]
 
-def query_chain(question, endpoint_name, root, token):
+def query_chain(question, endpoint_name, dbutils):
+    root = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
+    token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
     model_input_sample = {
         "messages": [{
             "role": "user",
