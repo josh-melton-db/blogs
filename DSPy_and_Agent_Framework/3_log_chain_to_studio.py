@@ -5,6 +5,10 @@
 
 # COMMAND ----------
 
+example_question = "What are the biggest issues being reported"
+
+# COMMAND ----------
+
 # DBTITLE 1,Import Libraries
 import os
 import mlflow
@@ -44,7 +48,7 @@ model_input_sample = {
     "messages": [
         {
             "role": "user",
-            "content": "What is causing delivery delays?",
+            "content": example_question,
         }
     ]
 }
