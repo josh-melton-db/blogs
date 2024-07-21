@@ -27,7 +27,7 @@ save_config(dbutils, config)
 # DBTITLE 1,Write Demo Data
 if generate_data_for_demo:
     from langchain.chat_models import ChatDatabricks
-    chat_model = ChatDatabricks(endpoint="databricks-dbrx-instruct", max_tokens = 200)
+    chat_model = ChatDatabricks(endpoint="databricks-meta-llama-3-70b-instruct", max_tokens = 200)
     reset_tables(spark, catalog, schema, config["demo_config"]["target_schema"])
     generate_source_data(chat_model, text_domain, category_ls, text_col_name, text_id_name, catalog, schema, table, spark)
 else:

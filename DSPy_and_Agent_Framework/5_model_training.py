@@ -1,5 +1,6 @@
 # Databricks notebook source
-# MAGIC %pip install --upgrade databricks-genai databricks-vectorsearch databricks-sdk databricks-agents # mlflow
+# MAGIC %pip install --upgrade databricks-vectorsearch databricks-sdk databricks-agents
+# MAGIC %pip install --upgrade databricks-genai
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
@@ -12,6 +13,7 @@ with open("rag_config.yaml", "r") as file:
 model_fqdn = rag_config.get("demo_config").get("model_fqdn")
 synthetic_eval_set_table_uc_fqn = rag_config.get("demo_config").get("synthetic_eval_set_table_uc_fqn")
 ft_table = rag_config.get("demo_config").get("source_table")+"_raft"
+num_docs = rag_config.get("vector_search_parameters").get("k")
 
 # COMMAND ----------
 
@@ -54,7 +56,7 @@ from pyspark.sql.functions import col, lit, concat
 ft_data_df = (
     spark.read.table(synthetic_eval_set_table_uc_fqn+"_eval_metrics")
     .select("request", "expected_response")
-    .withColumn("raft_docs", get_raft_docs_udf(col("expected_response"), lit(3), lit(1)))
+    .withColumn("raft_docs", get_raft_docs_udf(col("expected_response"), lit(num_docs), lit(1))) 
     .withColumn("prompt", concat(lit(prompt_ls[0]), col("raft_docs"), lit(prompt_ls[1]), col("request")))
     .withColumnRenamed("expected_response", "response")
     .select("prompt", "response")
@@ -79,18 +81,21 @@ run = fm.create(
     train_data_path=ft_table,
     task_type="INSTRUCTION_FINETUNE",  # task_type="CHAT_COMPLETION" also supported
     register_to=registered_model_name,
-    training_duration="5ep", # only 5 epochs to accelerate the demo. Check the mlflow experiment metrics to see if you should increase this number
+    training_duration="1ep", # only 5 epochs to accelerate the demo. Check the mlflow experiment metrics to see if you should increase this number
     learning_rate="5e-7", # small learning rate to not overfit to our small dataset
 )
+# For production use cases, use Provisioned Throughput APIs
+# https://docs.databricks.com/en/machine-learning/foundation-models/deploy-prov-throughput-foundation-model-apis.html#get-provisioned-throughput-in-increments
 
 print(run)
 
 # COMMAND ----------
 
-# TODO: waiting statement
-
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.serving import ServedEntityInput, EndpointCoreConfigInput, AutoCaptureConfigInput
+from utils.demo import wait_for_run_to_finish, get_latest_model_version
+
+# wait_for_run_to_finish(run) # TODO: fix this
 
 source_table_ls = rag_config.get("demo_config").get("source_table").split(".")
 catalog = source_table_ls[0]
@@ -101,8 +106,8 @@ endpoint_config = EndpointCoreConfigInput(
     name=serving_endpoint_name,
     served_entities=[
         ServedEntityInput(
-            entity_name=registered_model_name,
-            entity_version=1, # get_latest_model_version(registered_model_name), # TODO: get the latest model version instead of hardcoding it.
+            entity_name=registered_model_name, # TODO: push to PTFM instead of GPU?
+            entity_version=get_latest_model_version(registered_model_name), # TODO: get the latest model version instead of hardcoding it.
             workload_size="Small",
             workload_type="GPU_MEDIUM",
             scale_to_zero_enabled=True 
@@ -116,7 +121,7 @@ existing_endpoint = next(
     (e for e in w.serving_endpoints.list() if e.name == serving_endpoint_name), None
 )
 if existing_endpoint == None:
-    print(f"Creating the endpoint {serving_endpoint_name}, this will take a few minutes to package and deploy the endpoint...")
+    print(f"Creating the endpoint {serving_endpoint_name}, this will take a while to package and deploy the endpoint...")
     w.serving_endpoints.create_and_wait(name=serving_endpoint_name, config=endpoint_config)
 else:
   print(f"endpoint {serving_endpoint_name} already exist...")

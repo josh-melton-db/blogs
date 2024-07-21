@@ -4,11 +4,6 @@
 
 # COMMAND ----------
 
-import mlflow
-mlflow.__version__
-
-# COMMAND ----------
-
 import yaml
 
 with open("rag_config.yaml", "r") as file:
@@ -26,10 +21,11 @@ token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiTok
 url = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
 
 # Set up the model
-lm = dspy.Databricks(model="databricks-dbrx-instruct", model_type="chat", api_key=token, 
+lm = dspy.Databricks(model="databricks-meta-llama-3-70b-instruct", model_type="chat", api_key=token, 
                        api_base=url + "/serving-endpoints", max_tokens=200)
 ft_lm = ...
-judge = ...
+judge = dspy.Databricks(model="databricks-meta-llama-3-70b-instruct", model_type="chat", api_key=token, 
+                       api_base=url + "/serving-endpoints", max_tokens=200)
 dspy.settings.configure(lm=lm)
 
 # COMMAND ----------
@@ -92,67 +88,125 @@ pred
 
 # COMMAND ----------
 
-import mlflow
+class AssessResponse(dspy.Signature):
+    """Assess the quality of an outline along the specified dimension."""
+    request = dspy.InputField()
+    response_to_assess = dspy.InputField()
+    assessment_question = dspy.InputField()
+    assessment_answer = dspy.OutputField(desc="Yes or No")
+
+# COMMAND ----------
+
 import pandas as pd
 
-# mlflow.autolog(disable=True)
-# mlflow.disable_system_metrics_logging()
+# Define the metric for optimization
+def metric(gold, pred, trace=None):
+    request, expected_response = gold.request, gold.response # , gold.expected_retrieved_context
+    response = pred.response
+    with dspy.context(lm=judge):
+        # specific_q = "Does the response provide a very detailed, specific response to the request?"
+        # value_add_q = "Does the response avoid simply repeating back the provided request and add value to the conversation?"
+        not_duplicative_q = "Are the items in the list of responses unique rather than repetitive?"
+        listed_q = "Is the response formatted in a bulleted or numbered list?"
+        # specific_eval =  dspy.Predict(AssessResponse)(request=request, response_to_assess=response, assessment_question=specific_q)
+        # value_add_eval = dspy.Predict(AssessResponse)(request=request, response_to_assess=response, assessment_question=value_add_q)
+        not_duplicative_eval = dspy.Predict(AssessResponse)(request=request, response_to_assess=response, assessment_question=not_duplicative_q)
+        listed_eval = dspy.Predict(AssessResponse)(request=request, response_to_assess=response, assessment_question=listed_q)
+        target_len = 400
+        max_len_score = 3
+        length_eval = max((target_len - len(response)) / (target_len/max_len_score), 0) # Our users asked for short, numbered lists, so we'll incentivize that behavior 
 
-# Define the metric for optimization (e.g., accuracy)
-def accuracy_metric(gold, pred, trace=None):
-    eval_output = [{
-            "request": gold.request,
-            "response": pred.response,
-            "expected_response": gold.response
-    }]
-    eval_metrics = mlflow.evaluate(
-        data=pd.DataFrame(eval_output),
-        model_type="databricks-agent"
-    ).metrics
-    evals = [
-        eval_metrics["response/llm_judged/safety/rating/percentage"],
-        eval_metrics["response/llm_judged/correctness/rating/percentage"],
-        eval_metrics["response/llm_judged/correctness/rating/percentage"]
-    ]
-    return sum(evals) / len(evals)
-
-# COMMAND ----------
-
-def calculate_score(predictions, testset):
-    evals = []
-    for i, prediction in enumerate(predictions):
-        evals.append(accuracy_metric(trainset[i], prediction))
-    return sum(evals) / len(evals)
-
-unoptimized_predictions = [qa_agent.forward(example.request) for example in trainset]
-unoptimized_score = calculate_score(unoptimized_predictions, testset)
+        evals = [not_duplicative_eval, listed_eval]
+        results = ['yes' in m.assessment_answer.lower() for m in evals]
+        score = (sum(results) + length_eval) / (len(evals) + max_len_score) # Total score over total possible score
+        if trace is not None: # When training, we'll only return positive signal at a high score
+            print(results, length_eval, evals)
+            return score > .6
+        return score
 
 # COMMAND ----------
 
-from dspy.teleprompt import MIPRO
+def evaluate(testset, system):
+    scores = []
+    results = []
+    for x in testset:
+        pred = system(**x.inputs())
+        score = metric(x, pred)
+        scores.append(score)
+        results.append(pred)
+    return sum(scores) / len(testset), results
 
+# COMMAND ----------
 
-# Initialize the optimizer
-optimizer = MIPRO(metric=accuracy_metric)
+qa_agent = QuestionAnswerAgent(rm)
+baseline_score, baseline_results = evaluate(dataset, qa_agent) # TODO: testset
+print(f"Baseline score:    {baseline_score * 100:.2f}%")
+
+# COMMAND ----------
+
+with dspy.context(lm=judge): 
+    judge_score, judge_results = evaluate(dataset, qa_agent) # TODO: testset
+print(f"Judge score:    {judge_score * 100:.2f}%")
+
+# COMMAND ----------
+
+from dspy.teleprompt import MIPROv2
+
+optimizer = MIPROv2(prompt_model=judge, task_model=lm, metric=metric, num_candidates=3, init_temperature=1.0)
 
 # Optimize the program
 kwargs = dict(num_threads=4, display_progress=True, display_table=0)
 optimized_qa_agent = optimizer.compile(
     student=qa_agent,
-    trainset=trainset,
-    num_trials=1,
-    max_bootstrapped_demos=1,
-    max_labeled_demos=1,
+    trainset=dataset, # TODO: trainset
+    # max_bootstrapped_demos=1,
+    # max_labeled_demos=1,
     eval_kwargs=kwargs,
-    requires_permission_to_run=False
+    requires_permission_to_run=False,
 )
 
 # COMMAND ----------
 
 # Evaluate the optimized program
-optimized_predictions = [optimized_qa_agent.forward(example.request) for example in testset]
-optimized_score = calculate_score(optimized_predictions, testset)
-print(f"Optimized Program Accuracy: {optimized_score * 100:.2f}%")
+optimized_score, optimized_results = evaluate(dataset, optimized_qa_agent) # testset
+print(f"Optimized score:    {optimized_score * 100:.2f}%")
+
+# COMMAND ----------
+
+[i.request for i in testset]
+
+# COMMAND ----------
+
+import mlflow
+eval_output = [{
+        "request": [i.request for i in dataset], # TODO: testset
+        "response": [prediction.response for prediction in optimized_results],
+        "expected_response": [i.response for i in dataset] # TODO: testset
+}]
+eval_metrics = mlflow.evaluate(
+    data=pd.DataFrame(eval_output),
+    model_type="databricks-agent"
+).metrics
+eval_metrics
+
+# COMMAND ----------
+
+# from dspy.teleprompt import MIPRO
+
+# # Initialize the optimizer
+# optimizer = MIPRO(metric=metric)
+
+# # Optimize the program
+# kwargs = dict(num_threads=4, display_progress=True, display_table=0)
+# optimized_qa_agent = optimizer.compile(
+#     student=qa_agent,
+#     trainset=dataset, # TODO: trainset
+#     num_trials=1,
+#     max_bootstrapped_demos=1,
+#     max_labeled_demos=1,
+#     eval_kwargs=kwargs,
+#     requires_permission_to_run=False
+# )
 
 # COMMAND ----------
 

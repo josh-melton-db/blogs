@@ -139,4 +139,4 @@ agents.enable_trace_reviews(model_name=model_fqdn, request_ids=request_ids)
 
 # COMMAND ----------
 
-# TODO: can you send the LLM judge feedback to the reviewer in the app?
+

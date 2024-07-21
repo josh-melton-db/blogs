@@ -9,11 +9,12 @@ from openai import OpenAI
 import requests
 import concurrent.futures
 import json
+import time
 
 # TODO: reduce number of args - use kwargs, dictionary
 def get_config(catalog, source_schema, source_table_name, source_id_name, source_column_name, vs_endpoint,
                target_schema=None, num_docs=4, chunk_size_tokens=300, chunk_overlap_tokens=100,
-               embedding_endpoint="databricks-gte-large-en", chat_model="databricks-dbrx-instruct", chat_prompt=None,
+               embedding_endpoint="databricks-gte-large-en", chat_model="databricks-meta-llama-3-70b-instruct", chat_prompt=None,
                mlflow_run_name="generated_rag_demo", rag_app_name="generated_rag_demo"):
     w = WorkspaceClient()
     username = w.current_user.me().user_name.replace('@', '_').replace('.', '_')
@@ -276,3 +277,31 @@ def query_chain(question, endpoint_name, dbutils):
     url = f"{root}/serving-endpoints/{endpoint_name}/invocations"
     response = requests.post(url=url, json=model_input_sample, headers=headers)
     return response.json()
+
+#Helper fuinction to Wait for the fine tuning run to finish
+def wait_for_run_to_finish(run):
+  print_train = False
+  for i in range(300):
+    events = run.get_events()
+    for e in events:
+      if "FAILED" in e.type or "EXCEPTION" in e.type:
+        raise Exception(f'Error with the fine tuning run, check the details in run.get_events(): {e}')
+    if events[-1].type == 'TRAIN_FINISHED':
+      print('Run finished')
+      return events
+    if i % 30 == 0:
+      print(f'waiting for run {run.name} to complete...')
+    if events[-1].type == 'TRAIN_UPDATED' and not print_train:
+      print_train = True
+      display(events)
+    time.sleep(10)
+
+def get_latest_model_version(model_name):
+    from mlflow.tracking import MlflowClient
+    mlflow_client = MlflowClient(registry_uri="databricks-uc")
+    latest_version = 1
+    for mv in mlflow_client.search_model_versions(f"name='{model_name}'"):
+        version_int = int(mv.version)
+        if version_int > latest_version:
+            latest_version = version_int
+    return latest_version
