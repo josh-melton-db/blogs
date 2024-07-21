@@ -146,13 +146,13 @@ def reset_tables(spark, catalog, schema, target_schema, tried=False):
         spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{target_schema}")
     except Exception as e:
         if 'NO_SUCH_CATALOG_EXCEPTION' in str(e) and not tried:
-                spark.sql(f'create catalog {config["catalog"]}')
+                spark.sql(f'create catalog {catalog}')
                 reset_tables(spark, catalog, schema, True)
         else:
             raise
 
 def generate_source_data(chat_model, text_domain, category_ls, text_col_name, text_id_name, catalog, schema, table, spark):
-    print('Generating data, this may take a couple minutes')
+    print('Generating data, this may take some time')
     categories = generate_categories(chat_model, text_domain, category_ls)
     symptoms = generate_symptoms(chat_model, categories, text_domain)
     documents = generate_documents(chat_model, symptoms) 
@@ -161,9 +161,7 @@ def generate_source_data(chat_model, text_domain, category_ls, text_col_name, te
     df = df.withColumn("issue_description", regexp_replace(lower(col("issue_description")), lower(col("category")), ""))
     df = df.withColumn("issue_description", regexp_replace(col("issue_description"), ":", ""))
     df = df.withColumn(text_id_name, expr("substring(md5(cast(rand() as string)), 1, 7)"))
-
-    source_table = f"{catalog}.{schema}.{table}"
-    df.write.saveAsTable(source_table)
+    return df
 
 def check_dbr(spark):
     dbr_majorversion = int(spark.conf.get("spark.databricks.clusterUsageTags.sparkVersion").split(".")[0])
