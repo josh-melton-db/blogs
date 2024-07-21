@@ -47,7 +47,7 @@ payload_count = payload_df.count()
 from utils.demo import query_chain
 
 chunks_df = spark.table(chunk_table)
-synthetic_data_raw = [q for q in generate_questions(chunks_df.limit(3), chunk_text_key, doc_uri_key, dbutils) if q]
+synthetic_data_raw = [q for q in generate_questions(chunks_df, chunk_text_key, doc_uri_key, dbutils) if q]
 for question in synthetic_data_raw:
     response = query_chain(question["request"], endpoint_name, dbutils)
     question["request_id"] = response["id"]
@@ -60,18 +60,6 @@ synthetic_data_pdf = pd.DataFrame(synthetic_data_raw)
     .saveAsTable(synthetic_eval_set_table_uc_fqn)
 )
 display(synthetic_data_pdf)
-
-# COMMAND ----------
-
-type(synthetic_data_pdf)
-
-# COMMAND ----------
-
-# mlflow.set_registry_uri('databricks-uc')
-# from mlflow import MlflowClient
-# client = MlflowClient()
-# version = client.get_registered_model(model_fqdn).aliases['challenger']
-# model_uri = f"models:/{model_fqdn}/{version}"
 
 # COMMAND ----------
 
@@ -99,23 +87,6 @@ per_question_results_pdf = eval_results.tables["eval_results"]
 
 # You can click on a row in the `trace` column to view the detailed MLflow trace
 display(per_question_results_pdf)
-
-# COMMAND ----------
-
-eval_input = pd.DataFrame([{
-        "request": "What is the difference between reduceByKey and groupByKey in Spark?",
-        "response": "Whatchu on fool?",
-        "expected_response": "There's no significant difference."
-},{
-        "request": "What is the difference between reduceByKey and groupByKey in Spark?",
-        "response": "Whatchu on fool?",
-        "expected_response": "There's no significant difference."
-}])
-display(eval_input)
-eval_results = mlflow.evaluate(
-    data=eval_input,
-    model_type="databricks-agent"
-)
 
 # COMMAND ----------
 
