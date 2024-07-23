@@ -5,7 +5,7 @@
 
 # COMMAND ----------
 
-example_question = "What are the biggest issues being reported"
+example_question = "What are the biggest issues being reported?"
 
 # COMMAND ----------
 
@@ -97,7 +97,7 @@ from mlflow.client import MlflowClient
 # To deploy the model, first register the chain from the MLflow Run as a Unity Catalog model.
 mlflow.set_registry_uri('databricks-uc')
 uc_registered_model_info = mlflow.register_model(logged_chain_info.model_uri, model_fqdn)
-MlflowClient().set_registered_model_alias(model_fqdn, "Challenger", uc_registered_model_info.version)
+# MlflowClient().set_registered_model_alias(model_fqdn, "Challenger", uc_registered_model_info.version)
 
 deployment_info = agents.deploy(model_name=model_fqdn, model_version=uc_registered_model_info.version)
 
@@ -113,11 +113,6 @@ print(f"\n\nReview App: {deployment_info.review_app_url}")
 
 # COMMAND ----------
 
-chain = mlflow.langchain.load_model(logged_chain_info.model_uri)
-chain.invoke(model_input_sample)
-
-# COMMAND ----------
-
 # user_list = ["josh.melton@databricks.com"]
 
 # # Set the permissions.  If successful, there will be no return value.
@@ -125,9 +120,9 @@ chain.invoke(model_input_sample)
 
 # COMMAND ----------
 
-# active_deployments = agents.list_deployments()
-# active_deployment = next((item for item in active_deployments if item.model_name == model_fqdn), None)
-# print(f"Review App URL: {active_deployment.review_app_url}")
+active_deployments = agents.list_deployments()
+active_deployment = next((item for item in active_deployments if item.model_name == model_fqdn), None)
+print(f"Review App URL: {active_deployment.review_app_url}")
 
 # COMMAND ----------
 
