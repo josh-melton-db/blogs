@@ -128,46 +128,11 @@ existing_endpoint = next(
 )
 if existing_endpoint == None:
     print(f"Creating the endpoint {serving_endpoint_name}, this will take a while to package and deploy the endpoint...")
-    w.serving_endpoints.create_and_wait(name=serving_endpoint_name, config=endpoint_config) # TODO: catch the timeout error
+    w.serving_endpoints.create_and_wait(name=serving_endpoint_name, config=endpoint_config)
 else:
   print(f"endpoint {serving_endpoint_name} already exist...")
   if force_update:
     w.serving_endpoints.update_config_and_wait(served_entities=endpoint_config.served_entities, name=serving_endpoint_name)
-
-# COMMAND ----------
-
-import requests
-API_ROOT = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
-API_TOKEN = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
-
-
-def ft_model_inference(prompt):
-    data = {
-        "inputs": {"prompt": [prompt]},
-        "params": rag_config.get("chat_model_parameters")
-    }
-    headers = {"Context-Type": "text/json", "Authorization": f"Bearer {API_TOKEN}"}
-    response = requests.post(url=f"{API_ROOT}/serving-endpoints/{serving_endpoint_name}/invocations", json=data, headers=headers)
-    return response.json()["predictions"][0]["candidates"][0]["text"] # TODO: catch the missing field
-
-ft_pdf = (
-    ft_data_df
-    .withColumnRenamed("response", "expected_response")
-    .withColumnRenamed("prompt", "request")
-).toPandas()
-ft_pdf["response"] = ft_pdf["request"].apply(ft_model_inference)
-display(ft_pdf)
-
-# COMMAND ----------
-
-import mlflow
-with mlflow.start_run():
-    eval_results = mlflow.evaluate(
-        data=ft_pdf,
-        model_type="databricks-agent"
-    )
-
-eval_results.metrics
 
 # COMMAND ----------
 
@@ -197,7 +162,3 @@ eval_results.metrics
 #     .select("messages")
 # )
 # payload_df.display()
-
-# COMMAND ----------
-
-
