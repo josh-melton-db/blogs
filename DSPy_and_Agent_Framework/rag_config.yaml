@@ -1,4 +1,4 @@
-chat_endpoint: databricks-dbrx-instruct
+chat_endpoint: databricks-meta-llama-3-70b-instruct
 chat_model_parameters:
   max_tokens: 500
   temperature: 0.01
