@@ -64,7 +64,7 @@ display(synthetic_data_pdf)
 # COMMAND ----------
 
 synthetic_data_pdf = synthetic_data_pdf.sort_values(by="expected_response", key=lambda x: x.str.len())
-synthetic_data_pdf = synthetic_data_pdf.head(100)
+synthetic_data_pdf = synthetic_data_pdf.head(100)[.6:]
 
 with mlflow.start_run():
     eval_results = mlflow.evaluate(
