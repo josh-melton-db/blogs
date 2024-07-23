@@ -47,14 +47,20 @@ rm(query="Transportation and logistic issues", query_type="text")
 
 # COMMAND ----------
 
+from pyspark.sql.functions import length
+
 synthetic_eval_set_table_uc_fqn = rag_config.get("demo_config").get("synthetic_eval_set_table_uc_fqn")
-golden_dataset = spark.read.table(synthetic_eval_set_table_uc_fqn+"_eval_metrics").toPandas()
+golden_dataset = (
+    spark.read.table(synthetic_eval_set_table_uc_fqn+"_eval_metrics")
+    .orderBy(length("expected_response").asc()) # Use smaller responses to train
+    .limit(100) # Limit to 100 records for demo - in production, use 300+
+).toPandas()
 train_cutoff = int(len(golden_dataset) * .6)
 dataset = [dspy.Example(request=row['request'], response=row['expected_response'], 
                         context=row['expected_retrieved_context']).with_inputs('request') 
            for i, row in golden_dataset.iterrows()]
 trainset = dataset[:train_cutoff]
-testset = dataset[train_cutoff:] # TODO: get the best examples for training, dynamically set the metric for length
+testset = dataset[train_cutoff:]
 
 # COMMAND ----------
 
@@ -134,15 +140,30 @@ def evaluate(testset, system):
 
 # COMMAND ----------
 
-qa_agent = QuestionAnswerAgent(rm)
-baseline_score, baseline_results = evaluate(testset, qa_agent) # TODO: testset
-print(f"Baseline score:    {baseline_score * 100:.2f}%")
+with dspy.context(lm=ft_lm): 
+    baseline_ft_score, baseline_ft_results = evaluate(testset, qa_agent)
+print(f"Baseline fine tune score:    {baseline_ft_score * 100:.2f}%")
 
 # COMMAND ----------
 
-with dspy.context(lm=judge): 
-    judge_score, judge_results = evaluate(testset, qa_agent)
-print(f"Judge score:    {judge_score * 100:.2f}%")
+import mlflow
+import pandas as pd
+
+def mlflow_evaluate(testset, results):
+    eval_output = []
+    for i, prediction in enumerate(results):
+        eval_output.append({
+            "request": testset[i].request,
+            "response": prediction.response,
+            "expected_response": testset[i].response
+        })
+    eval_metrics = mlflow.evaluate(
+        data=pd.DataFrame(eval_output),
+        model_type="databricks-agent"
+    ).metrics
+    return eval_metrics
+    
+mlflow_evaluate(testset, baseline_ft_results)
 
 # COMMAND ----------
 
@@ -164,20 +185,8 @@ with dspy.context(lm=ft_lm):
 
 # Evaluate the optimized program
 optimized_score, optimized_results = evaluate(testset, optimized_qa_agent)
-print(f"Optimized score:    {optimized_score * 100:.2f}%")
+print(f"Optimized fine tune score:    {optimized_score * 100:.2f}%")
 
 # COMMAND ----------
 
-import mlflow
-import pandas as pd
-
-eval_output = [{
-        "request": [i.request for i in testset],
-        "response": [prediction.response for prediction in optimized_results],
-        "expected_response": [i.response for i in testset]
-}]
-eval_metrics = mlflow.evaluate(
-    data=pd.DataFrame(eval_output),
-    model_type="databricks-agent"
-).metrics
-eval_metrics
+mlflow_evaluate(testset, optimized_results)
