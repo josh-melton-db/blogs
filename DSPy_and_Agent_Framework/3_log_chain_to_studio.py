@@ -120,9 +120,9 @@ print(f"\n\nReview App: {deployment_info.review_app_url}")
 
 # COMMAND ----------
 
-active_deployments = agents.list_deployments()
-active_deployment = next((item for item in active_deployments if item.model_name == model_fqdn), None)
-print(f"Review App URL: {active_deployment.review_app_url}")
+# active_deployments = agents.list_deployments()
+# active_deployment = next((item for item in active_deployments if item.model_name == model_fqdn), None)
+# print(f"Review App URL: {active_deployment.review_app_url}")
 
 # COMMAND ----------
 
