@@ -1,4 +1,5 @@
 # Databricks notebook source
+# MAGIC %pip install langchain==0.2.1 langchain_core==0.2.5 langchain_community==0.2.4 
 # MAGIC %pip install --upgrade databricks-vectorsearch databricks-sdk databricks-agents
 # MAGIC %pip install --upgrade databricks-genai
 # MAGIC dbutils.library.restartPython()
@@ -51,15 +52,20 @@ def get_raft_docs_udf(query_text, n_retrieve_docs, n_adversarial_docs):
 
 # COMMAND ----------
 
-from pyspark.sql.functions import col, lit, concat
+from pyspark.sql.functions import col, lit, concat, length
 
-ft_data_df = (
+ft_data_df = ( # Return data that the system had trouble on according to our judge or our user expectations
     spark.read.table(synthetic_eval_set_table_uc_fqn+"_eval_metrics")
-    .select("request", "expected_response")
-    .withColumn("raft_docs", get_raft_docs_udf(col("expected_response"), lit(num_docs), lit(1))) 
+    .where(
+        (col("`response/llm_judged/relevance_to_query/rating`") == 'no') |
+        (col("`response/llm_judged/correctness/rating`") == 'no') |
+        (col("`response/llm_judged/safety/rating`") == 'no') | 
+        ~(col("response").contains("1.") & col("response").contains("2."))
+    ) # Add distractor documents as described in RAFT paper
+    .withColumn("raft_docs", get_raft_docs_udf(col("response"), lit(num_docs), lit(1))) 
     .withColumn("prompt", concat(lit(prompt_ls[0]), col("raft_docs"), lit(prompt_ls[1]), col("request")))
+    .select("prompt", "expected_response")
     .withColumnRenamed("expected_response", "response")
-    .select("prompt", "response")
 )
 ft_data_df.write.mode("overwrite").option("mergeSchema", "true").saveAsTable(ft_table)
 ft_data_df.display()
@@ -79,9 +85,9 @@ run = fm.create(
     data_prep_cluster_id=get_current_cluster_id(),  # required if you are using delta tables as training data source. This is the cluster id that we want to use for our data prep job.
     model="meta-llama/Meta-Llama-3-8B-Instruct",  # Here we define what model we used as our baseline
     train_data_path=ft_table,
-    task_type="INSTRUCTION_FINETUNE",  # task_type="CHAT_COMPLETION" also supported
+    task_type="INSTRUCTION_FINETUNE",  # task_type="CHAT_COMPLETION" or "CONTINUED_PRETRAIN" also supported
     register_to=registered_model_name,
-    training_duration="1ep", # only 5 epochs to accelerate the demo. Check the mlflow experiment metrics to see if you should increase this number
+    training_duration="10ep", # only 10 epochs. Check the mlflow experiment metrics to see if you should increase this number
     learning_rate="5e-7", # small learning rate to not overfit to our small dataset
 )
 # For production use cases, use Provisioned Throughput APIs
@@ -95,7 +101,7 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.serving import ServedEntityInput, EndpointCoreConfigInput, AutoCaptureConfigInput
 from utils.demo import wait_for_run_to_finish, get_latest_model_version
 
-# wait_for_run_to_finish(run) # TODO: fix this
+# wait_for_run_to_finish(run) # TODO: fix this, spins forever
 
 source_table_ls = rag_config.get("demo_config").get("source_table").split(".")
 catalog = source_table_ls[0]
@@ -106,8 +112,8 @@ endpoint_config = EndpointCoreConfigInput(
     name=serving_endpoint_name,
     served_entities=[
         ServedEntityInput(
-            entity_name=registered_model_name, # TODO: push to PTFM instead of GPU?
-            entity_version=get_latest_model_version(registered_model_name), # TODO: get the latest model version instead of hardcoding it.
+            entity_name=registered_model_name, 
+            entity_version=get_latest_model_version(registered_model_name),
             workload_size="Small",
             workload_type="GPU_MEDIUM",
             scale_to_zero_enabled=True 
@@ -122,7 +128,7 @@ existing_endpoint = next(
 )
 if existing_endpoint == None:
     print(f"Creating the endpoint {serving_endpoint_name}, this will take a while to package and deploy the endpoint...")
-    w.serving_endpoints.create_and_wait(name=serving_endpoint_name, config=endpoint_config)
+    w.serving_endpoints.create_and_wait(name=serving_endpoint_name, config=endpoint_config) # TODO: catch the timeout error
 else:
   print(f"endpoint {serving_endpoint_name} already exist...")
   if force_update:
@@ -130,17 +136,38 @@ else:
 
 # COMMAND ----------
 
-# from pyspark.sql.functions import from_json, col, array, expr
+import requests
+API_ROOT = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
+API_TOKEN = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
 
-# payload_df = (
-#     spark.table(f"{model_fqdn}_payload")
-#     .withColumn("parsed_request", expr("response:databricks_output:trace:data:request:messages[0]"))
-#     .withColumn("parsed_response", expr("response:choices[0]:message"))
-#     .where("parsed_request is not null and parsed_response is not null")
-#     .withColumn("messages", array(col("parsed_request"), col("parsed_response")))
-#     .select("messages")
-# )
-# payload_df.display()
+
+def ft_model_inference(prompt):
+    data = {
+        "inputs": {"prompt": [prompt]},
+        "params": rag_config.get("chat_model_parameters")
+    }
+    headers = {"Context-Type": "text/json", "Authorization": f"Bearer {API_TOKEN}"}
+    response = requests.post(url=f"{API_ROOT}/serving-endpoints/{serving_endpoint_name}/invocations", json=data, headers=headers)
+    return response.json()["predictions"][0]["candidates"][0]["text"] # TODO: catch the missing field
+
+ft_pdf = (
+    ft_data_df
+    .withColumnRenamed("response", "expected_response")
+    .withColumnRenamed("prompt", "request")
+).toPandas()
+ft_pdf["response"] = ft_pdf["request"].apply(ft_model_inference)
+display(ft_pdf)
+
+# COMMAND ----------
+
+import mlflow
+with mlflow.start_run():
+    eval_results = mlflow.evaluate(
+        data=ft_pdf,
+        model_type="databricks-agent"
+    )
+
+eval_results.metrics
 
 # COMMAND ----------
 
@@ -159,4 +186,18 @@ else:
 
 # COMMAND ----------
 
-# TODO: build RAG chain, score with mlflow evaluate, compare to baseline
+# from pyspark.sql.functions import from_json, col, array, expr
+
+# payload_df = (
+#     spark.table(f"{model_fqdn}_payload")
+#     .withColumn("parsed_request", expr("response:databricks_output:trace:data:request:messages[0]"))
+#     .withColumn("parsed_response", expr("response:choices[0]:message"))
+#     .where("parsed_request is not null and parsed_response is not null")
+#     .withColumn("messages", array(col("parsed_request"), col("parsed_response")))
+#     .select("messages")
+# )
+# payload_df.display()
+
+# COMMAND ----------
+
+
