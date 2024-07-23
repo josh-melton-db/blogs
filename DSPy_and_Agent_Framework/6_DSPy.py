@@ -23,11 +23,11 @@ url = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl()
 
 # Set up the model
 lm = dspy.Databricks(model="databricks-meta-llama-3-70b-instruct", model_type="chat", api_key=token, 
-                       api_base=url + "/serving-endpoints", max_tokens=600) # Use different model as teacher/judge
+                       api_base=url + "/serving-endpoints", max_tokens=600) # Baseline/distill 70b parameter model
 ft_lm = dspy.Databricks(model=serving_endpoint_name, model_type="text", api_key=token, 
                         api_base=url + "/serving-endpoints", max_tokens=600) # Using a smaller and cheaper fine tuned model
 judge = dspy.Databricks(model="databricks-dbrx-instruct", model_type="chat", api_key=token, 
-                       api_base=url + "/serving-endpoints", max_tokens=600) # Test 70b parameter model
+                       api_base=url + "/serving-endpoints", max_tokens=600) # Use different model as judge
 dspy.settings.configure(lm=lm)
 
 # COMMAND ----------
