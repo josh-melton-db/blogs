@@ -204,7 +204,7 @@ def generate_question(chunk_row, chunk_text_key, model_endpoint, root, token):
         
     context: {context}"""
 
-    q_system_prompt = "You are an expert at resolving customer issues.  You are also an expert at generating questions that a human would likely ask about specific content from the issues. You pride yourself on your ability to be realistic, yet a bit creative, and you know that a human will evaluate your output, so you put extra effort into following instructions exactly. Do not use leading numbers. DO NOT REFER TO THE INSTRUCTIONS OR CONTEXT DIRECTLY, DO NOT PROVIDE AN ANSWER."
+    q_system_prompt = "You are an expert at resolving customer issues. You are also an expert at generating questions that a human would likely ask about specific content from the issues. The question should require more than a simple one word answer. You pride yourself on your ability to be realistic, yet a bit creative, and you know that a human will evaluate your output, so you put extra effort into following instructions exactly. Do not use leading numbers. DO NOT REFER TO THE INSTRUCTIONS OR CONTEXT DIRECTLY, DO NOT PROVIDE AN ANSWER."
     client = OpenAI()
     prompt = PROMPT_TEMPLATE.format(context=chunk_row[chunk_text_key])
     question = client.chat.completions.create(
