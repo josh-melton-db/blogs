@@ -22,11 +22,11 @@ token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiTok
 url = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
 
 # Set up the model
-lm = dspy.Databricks(model="databricks-dbrx-instruct", model_type="chat", api_key=token, 
+lm = dspy.Databricks(model="databricks-meta-llama-3-70b-instruct", model_type="chat", api_key=token, 
                        api_base=url + "/serving-endpoints", max_tokens=600) # Use different model as teacher/judge
 ft_lm = dspy.Databricks(model=serving_endpoint_name, model_type="text", api_key=token, 
                         api_base=url + "/serving-endpoints", max_tokens=600) # Using a smaller and cheaper fine tuned model
-judge = dspy.Databricks(model="databricks-meta-llama-3-70b-instruct", model_type="chat", api_key=token, 
+judge = dspy.Databricks(model="databricks-dbrx-instruct", model_type="chat", api_key=token, 
                        api_base=url + "/serving-endpoints", max_tokens=600) # Test 70b parameter model
 dspy.settings.configure(lm=lm)
 
@@ -148,7 +148,7 @@ print(f"Judge score:    {judge_score * 100:.2f}%")
 
 from dspy.teleprompt import MIPROv2
 
-optimizer = MIPROv2(prompt_model=judge, task_model=ft_lm, metric=metric, num_candidates=3, init_temperature=0.1)
+optimizer = MIPROv2(prompt_model=lm, task_model=ft_lm, metric=metric, num_candidates=3, init_temperature=0.1)
 
 # Optimize the program
 kwargs = dict(num_threads=4, display_progress=True, display_table=0)
@@ -163,9 +163,8 @@ with dspy.context(lm=ft_lm):
 # COMMAND ----------
 
 # Evaluate the optimized program
-with dspy.context(lm=ft_lm):
-    optimized_score, optimized_results = evaluate(testset, optimized_qa_agent)
-    print(f"Optimized score:    {optimized_score * 100:.2f}%")
+optimized_score, optimized_results = evaluate(testset, optimized_qa_agent)
+print(f"Optimized score:    {optimized_score * 100:.2f}%")
 
 # COMMAND ----------
 
