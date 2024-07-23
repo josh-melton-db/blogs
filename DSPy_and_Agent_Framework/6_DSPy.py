@@ -12,6 +12,7 @@ with open("rag_config.yaml", "r") as file:
 model_fqdn = rag_config.get("demo_config").get("model_fqdn")
 synthetic_eval_set_table_uc_fqn = rag_config.get("demo_config").get("synthetic_eval_set_table_uc_fqn")
 ft_table = rag_config.get("demo_config").get("source_table")+"_raft"
+serving_endpoint_name = rag_config.get("demo_config").get("endpoint_name") + "_ft"
 
 # COMMAND ----------
 
@@ -21,11 +22,12 @@ token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiTok
 url = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
 
 # Set up the model
-lm = dspy.Databricks(model="databricks-meta-llama-3-70b-instruct", model_type="chat", api_key=token, 
-                       api_base=url + "/serving-endpoints", max_tokens=200)
-ft_lm = ...
+lm = dspy.Databricks(model="databricks-dbrx-instruct", model_type="chat", api_key=token, 
+                       api_base=url + "/serving-endpoints", max_tokens=600) # Use different model as teacher/judge
+ft_lm = dspy.Databricks(model=serving_endpoint_name, model_type="text", api_key=token, 
+                        api_base=url + "/serving-endpoints", max_tokens=600) # Using a smaller and cheaper fine tuned model
 judge = dspy.Databricks(model="databricks-meta-llama-3-70b-instruct", model_type="chat", api_key=token, 
-                       api_base=url + "/serving-endpoints", max_tokens=200)
+                       api_base=url + "/serving-endpoints", max_tokens=600) # Test 70b parameter model
 dspy.settings.configure(lm=lm)
 
 # COMMAND ----------
@@ -45,30 +47,26 @@ rm(query="Transportation and logistic issues", query_type="text")
 
 # COMMAND ----------
 
-display(spark.read.table(synthetic_eval_set_table_uc_fqn+"_eval_metrics"))
-
-# COMMAND ----------
-
 synthetic_eval_set_table_uc_fqn = rag_config.get("demo_config").get("synthetic_eval_set_table_uc_fqn")
 golden_dataset = spark.read.table(synthetic_eval_set_table_uc_fqn+"_eval_metrics").toPandas()
-train_cutoff = 1 # int(len(golden_dataset) * .6)
+train_cutoff = int(len(golden_dataset) * .6)
 dataset = [dspy.Example(request=row['request'], response=row['expected_response'], 
                         context=row['expected_retrieved_context']).with_inputs('request') 
            for i, row in golden_dataset.iterrows()]
 trainset = dataset[:train_cutoff]
-testset = dataset[train_cutoff:]
+testset = dataset[train_cutoff:] # TODO: get the best examples for training, dynamically set the metric for length
 
 # COMMAND ----------
+
+class QueryExpand(dspy.Signature):
+    """Rephrases the question to increase the quality of the response"""
+    question = dspy.InputField(desc="A question about our business")
+    expanded_question = dspy.OutputField(desc="A slightly expanded question that provides more context to our retrieval engine")
 
 class QuestionAnswer(dspy.Signature):
     """Returns the answer to the question"""
     request = dspy.InputField(desc="A question about our business")
     response = dspy.OutputField(desc="A short, numbered answer to the question")
-
-class QueryExpand(dspy.Signature):
-    """Rephrases the question to increase the quality of the response"""
-    question = dspy.InputField(desc="A question about our business")
-    expanded_question = dspy.OutputField(desc="An expanded question")
 
 class QuestionAnswerAgent(dspy.Module):
     def __init__(self, rm):
@@ -83,7 +81,7 @@ class QuestionAnswerAgent(dspy.Module):
         return self.answer_cot(request=request+docs)
 
 qa_agent = QuestionAnswerAgent(rm)
-pred = qa_agent(trainset[0].request)
+pred = qa_agent(dataset[0].request)
 pred
 
 # COMMAND ----------
@@ -97,22 +95,20 @@ class AssessResponse(dspy.Signature):
 
 # COMMAND ----------
 
-import pandas as pd
-
 # Define the metric for optimization
 def metric(gold, pred, trace=None):
     request, expected_response = gold.request, gold.response # , gold.expected_retrieved_context
     response = pred.response
     with dspy.context(lm=judge):
-        # specific_q = "Does the response provide a very detailed, specific response to the request?"
-        # value_add_q = "Does the response avoid simply repeating back the provided request and add value to the conversation?"
+        specific_q = "Does the response provide a very detailed, specific response to the request?"
+        value_add_q = "Does the response avoid simply repeating back the provided request and add value to the conversation?"
         not_duplicative_q = "Are the items in the list of responses unique rather than repetitive?"
         listed_q = "Is the response formatted in a bulleted or numbered list?"
-        # specific_eval =  dspy.Predict(AssessResponse)(request=request, response_to_assess=response, assessment_question=specific_q)
-        # value_add_eval = dspy.Predict(AssessResponse)(request=request, response_to_assess=response, assessment_question=value_add_q)
+        specific_eval =  dspy.Predict(AssessResponse)(request=request, response_to_assess=response, assessment_question=specific_q)
+        value_add_eval = dspy.Predict(AssessResponse)(request=request, response_to_assess=response, assessment_question=value_add_q)
         not_duplicative_eval = dspy.Predict(AssessResponse)(request=request, response_to_assess=response, assessment_question=not_duplicative_q)
         listed_eval = dspy.Predict(AssessResponse)(request=request, response_to_assess=response, assessment_question=listed_q)
-        target_len = 400
+        target_len = 600
         max_len_score = 3
         length_eval = max((target_len - len(response)) / (target_len/max_len_score), 0) # Our users asked for short, numbered lists, so we'll incentivize that behavior 
 
@@ -139,75 +135,50 @@ def evaluate(testset, system):
 # COMMAND ----------
 
 qa_agent = QuestionAnswerAgent(rm)
-baseline_score, baseline_results = evaluate(dataset, qa_agent) # TODO: testset
+baseline_score, baseline_results = evaluate(testset, qa_agent) # TODO: testset
 print(f"Baseline score:    {baseline_score * 100:.2f}%")
 
 # COMMAND ----------
 
 with dspy.context(lm=judge): 
-    judge_score, judge_results = evaluate(dataset, qa_agent) # TODO: testset
+    judge_score, judge_results = evaluate(testset, qa_agent)
 print(f"Judge score:    {judge_score * 100:.2f}%")
 
 # COMMAND ----------
 
 from dspy.teleprompt import MIPROv2
 
-optimizer = MIPROv2(prompt_model=judge, task_model=lm, metric=metric, num_candidates=3, init_temperature=1.0)
+optimizer = MIPROv2(prompt_model=judge, task_model=ft_lm, metric=metric, num_candidates=3, init_temperature=0.1)
 
 # Optimize the program
 kwargs = dict(num_threads=4, display_progress=True, display_table=0)
-optimized_qa_agent = optimizer.compile(
-    student=qa_agent,
-    trainset=dataset, # TODO: trainset
-    # max_bootstrapped_demos=1,
-    # max_labeled_demos=1,
-    eval_kwargs=kwargs,
-    requires_permission_to_run=False,
-)
+with dspy.context(lm=ft_lm):
+    optimized_qa_agent = optimizer.compile(
+        student=qa_agent,
+        trainset=trainset, 
+        eval_kwargs=kwargs,
+        requires_permission_to_run=False,
+    )
 
 # COMMAND ----------
 
 # Evaluate the optimized program
-optimized_score, optimized_results = evaluate(dataset, optimized_qa_agent) # testset
-print(f"Optimized score:    {optimized_score * 100:.2f}%")
-
-# COMMAND ----------
-
-[i.request for i in testset]
+with dspy.context(lm=ft_lm):
+    optimized_score, optimized_results = evaluate(testset, optimized_qa_agent)
+    print(f"Optimized score:    {optimized_score * 100:.2f}%")
 
 # COMMAND ----------
 
 import mlflow
+import pandas as pd
+
 eval_output = [{
-        "request": [i.request for i in dataset], # TODO: testset
+        "request": [i.request for i in testset],
         "response": [prediction.response for prediction in optimized_results],
-        "expected_response": [i.response for i in dataset] # TODO: testset
+        "expected_response": [i.response for i in testset]
 }]
 eval_metrics = mlflow.evaluate(
     data=pd.DataFrame(eval_output),
     model_type="databricks-agent"
 ).metrics
 eval_metrics
-
-# COMMAND ----------
-
-# from dspy.teleprompt import MIPRO
-
-# # Initialize the optimizer
-# optimizer = MIPRO(metric=metric)
-
-# # Optimize the program
-# kwargs = dict(num_threads=4, display_progress=True, display_table=0)
-# optimized_qa_agent = optimizer.compile(
-#     student=qa_agent,
-#     trainset=dataset, # TODO: trainset
-#     num_trials=1,
-#     max_bootstrapped_demos=1,
-#     max_labeled_demos=1,
-#     eval_kwargs=kwargs,
-#     requires_permission_to_run=False
-# )
-
-# COMMAND ----------
-
-
