@@ -90,14 +90,14 @@ display(per_question_results_pdf)
 
 # COMMAND ----------
 
-# from time import sleep
+from time import sleep
 
-# total_reqs = payload_count + len(synthetic_data_pdf)
-# minutes = 0
-# while total_reqs >= payload_count and minutes < 10: # TODO: fix this logic
-#     sleep(30)
-#     payload_count = spark.table(f"{model_fqdn}_payload").count()
-#     minutes += 0.5
+total_reqs = payload_count + len(synthetic_data_pdf)
+minutes = 0
+while payload_count < total_reqs and minutes < 10: # TODO: fix this logic
+    sleep(30)
+    payload_count = spark.table(f"{model_fqdn}_payload").count()
+    minutes += 0.5
 
 payload_df = spark.table(f"{model_fqdn}_payload")
 display(payload_df)
@@ -105,7 +105,16 @@ display(payload_df)
 # COMMAND ----------
 
 # DBTITLE 1,Send Inferences to App for Human Eval
-request_ids = payload_df.select("databricks_request_id").rdd.flatMap(lambda x: x).collect() # TODO: only request bad ones 
+from pyspark.sql.functions import col, lit, concat, length, expr
+
+payload_df = (
+    payload_df # filter down to requests that don't meet end users' criteria for SME review
+    .withColumn("content", expr("request:messages[0]:content"))
+    .where(~(col("content").contains("1.") & col("content").contains("2."))) 
+    .where(length(col("content")) > 200)  
+    .drop("content")
+)
+request_ids = payload_df.select("databricks_request_id").rdd.flatMap(lambda x: x).collect()
 agents.enable_trace_reviews(model_name=model_fqdn, request_ids=request_ids)
 
 # COMMAND ----------
