@@ -1,9 +1,11 @@
 # Databricks notebook source
+# DBTITLE 1,pip installs
 # MAGIC %pip install -U -qqqq databricks-agents dspy-ai mlflow mlflow-skinny
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
 
+# DBTITLE 1,Set Configuration
 import yaml
 
 with open("rag_config.yaml", "r") as file:
@@ -16,6 +18,7 @@ serving_endpoint_name = rag_config.get("demo_config").get("endpoint_name") + "_f
 
 # COMMAND ----------
 
+# DBTITLE 1,DSPy Setup
 import dspy
 
 token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
@@ -32,13 +35,14 @@ dspy.settings.configure(lm=lm)
 
 # COMMAND ----------
 
+# DBTITLE 1,Set Retrieval Model
 from dspy.retrieve.databricks_rm import DatabricksRM
 
 rm = DatabricksRM(
     databricks_index_name=rag_config.get("vector_search_index"),
     databricks_endpoint=url,
     databricks_token=token,
-    columns=[rag_config.get("chunk_column_name")],
+    columns=[rag_config.get("chunk_column_name"), rag_config.get("document_source_id")],
     text_column_name=rag_config.get("chunk_column_name"),
     docs_id_column_name=rag_config.get("document_source_id"), # TODO: return doc id too, use in eval
     k=rag_config.get("vector_search_parameters").get("k")
@@ -47,6 +51,7 @@ rm(query="Transportation and logistic issues", query_type="text")
 
 # COMMAND ----------
 
+# DBTITLE 1,Define Golden Dataset
 from pyspark.sql.functions import length
 
 synthetic_eval_set_table_uc_fqn = rag_config.get("demo_config").get("synthetic_eval_set_table_uc_fqn")
@@ -64,6 +69,7 @@ testset = dataset[train_cutoff:]
 
 # COMMAND ----------
 
+# DBTITLE 1,DSPy Signatures and Modules
 class QueryExpand(dspy.Signature):
     """Rephrases the question to increase the quality of the response"""
     question = dspy.InputField(desc="A question about our business")
@@ -79,9 +85,9 @@ class QuestionAnswerAgent(dspy.Module):
         super().__init__()
         self.rm = rm
         self.query_expander = dspy.ChainOfThought(QueryExpand)
-        self.answer_cot = dspy.ChainOfThought(QuestionAnswer) # stitch together the RAG chain
+        self.answer_cot = dspy.ChainOfThought(QuestionAnswer) 
 
-    def forward(self, request):
+    def forward(self, request): # stitch together the RAG chain
         expanded_question = self.query_expander(question=request).expanded_question
         docs = " ".join(self.rm(expanded_question).docs)
         return self.answer_cot(request=request+docs)
@@ -101,6 +107,7 @@ class AssessResponse(dspy.Signature):
 
 # COMMAND ----------
 
+# DBTITLE 1,DSPy Metric
 # Define the metric for optimization
 def metric(gold, pred, trace=None):
     request, expected_response = gold.request, gold.response # , gold.expected_retrieved_context
@@ -115,19 +122,20 @@ def metric(gold, pred, trace=None):
         not_duplicative_eval = dspy.Predict(AssessResponse)(request=request, response_to_assess=response, assessment_question=not_duplicative_q)
         listed_eval = dspy.Predict(AssessResponse)(request=request, response_to_assess=response, assessment_question=listed_q)
         target_len = 600
-        max_len_score = 3
-        length_eval = max((target_len - len(response)) / (target_len/max_len_score), 0) # Our users asked for short, numbered lists, so we'll incentivize that behavior 
+        max_len_score = 3 # Our users asked for short, numbered lists, so we'll incentivize that behavior 
+        length_eval = max((target_len - len(response)) / (target_len/max_len_score), 0) 
 
         evals = [not_duplicative_eval, listed_eval]
         results = ['yes' in m.assessment_answer.lower() for m in evals]
         score = (sum(results) + length_eval) / (len(evals) + max_len_score) # Total score over total possible score
         if trace is not None: # When training, we'll only return positive signal at a high score
-            print(results, length_eval, evals)
-            return score > .6
+            # print(results, length_eval, evals)
+            return score > .5
         return score
 
 # COMMAND ----------
 
+# DBTITLE 1,DSPy Evaluation Function
 def evaluate(testset, system):
     scores = []
     results = []
@@ -140,12 +148,14 @@ def evaluate(testset, system):
 
 # COMMAND ----------
 
+# DBTITLE 1,Run DSPy Evaluate
 with dspy.context(lm=ft_lm): 
     baseline_ft_score, baseline_ft_results = evaluate(testset, qa_agent)
 print(f"Baseline fine tune score:    {baseline_ft_score * 100:.2f}%")
 
 # COMMAND ----------
 
+# DBTITLE 1,MLflow Evaluation Function
 import mlflow
 import pandas as pd
 
@@ -167,6 +177,7 @@ mlflow_evaluate(testset, baseline_ft_results)
 
 # COMMAND ----------
 
+# DBTITLE 1,DSPy Optimization
 from dspy.teleprompt import MIPROv2
 
 optimizer = MIPROv2(prompt_model=lm, task_model=ft_lm, metric=metric, num_candidates=3, init_temperature=0.1)
@@ -183,10 +194,12 @@ with dspy.context(lm=ft_lm):
 
 # COMMAND ----------
 
+# DBTITLE 1,DSPy Evaluation
 # Evaluate the optimized program
 optimized_score, optimized_results = evaluate(testset, optimized_qa_agent)
 print(f"Optimized fine tune score:    {optimized_score * 100:.2f}%")
 
 # COMMAND ----------
 
+# DBTITLE 1,MLflow Evaluation
 mlflow_evaluate(testset, optimized_results)
