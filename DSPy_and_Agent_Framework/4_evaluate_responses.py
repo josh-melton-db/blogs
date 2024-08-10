@@ -1,4 +1,5 @@
 # Databricks notebook source
+# DBTITLE 1,pip installs
 # MAGIC %pip install -U -qqqq databricks-agents mlflow mlflow-skinny databricks-sdk databricks-vectorsearch
 # MAGIC dbutils.library.restartPython()
 
@@ -38,6 +39,7 @@ endpoint_name = rag_config.get("demo_config").get("endpoint_name")
 
 # COMMAND ----------
 
+# DBTITLE 1,Set Payload Count
 payload_df = spark.table(f"{model_fqdn}_payload")
 payload_count = payload_df.count()
 
@@ -63,6 +65,7 @@ display(synthetic_data_pdf)
 
 # COMMAND ----------
 
+# DBTITLE 1,Evaluate Vanilla Chain
 synthetic_data_pdf = synthetic_data_pdf.sort_values(by="expected_response", key=lambda x: x.str.len())
 synthetic_data_pdf = synthetic_data_pdf.head(100)[.6:]
 
@@ -76,6 +79,7 @@ eval_results.metrics
 
 # COMMAND ----------
 
+# DBTITLE 1,Save Evaluations
 from pyspark.sql.functions import expr
 
 # Evaluation results including LLM judge scores/rationales for each row in your evaluation set
@@ -93,32 +97,18 @@ display(per_question_results_pdf)
 
 # COMMAND ----------
 
-from time import sleep
+# DBTITLE 1,Send Payloads to App for Human Eval
+# from pyspark.sql.functions import col, lit, concat, length, expr
 
-total_reqs = payload_count + len(synthetic_data_pdf)
-minutes = 0
-while payload_count < total_reqs and minutes < 10: # TODO: fix this logic
-    sleep(30)
-    payload_count = spark.table(f"{model_fqdn}_payload").count()
-    minutes += 0.5
-
-payload_df = spark.table(f"{model_fqdn}_payload")
-display(payload_df)
-
-# COMMAND ----------
-
-# DBTITLE 1,Send Inferences to App for Human Eval
-from pyspark.sql.functions import col, lit, concat, length, expr
-
-payload_df = (
-    payload_df # filter down to requests that don't meet end users' criteria for SME review
-    .withColumn("content", expr("request:messages[0]:content"))
-    .where(~(col("content").contains("1.") & col("content").contains("2."))) 
-    .where(length(col("content")) > 200)  
-    .drop("content")
-)
-request_ids = payload_df.select("databricks_request_id").rdd.flatMap(lambda x: x).collect()
-agents.enable_trace_reviews(model_name=model_fqdn, request_ids=request_ids)
+# payload_df = (  # filter down to requests that don't meet end users' criteria for SME review
+#     spark.table(f"{model_fqdn}_payload")
+#     .withColumn("content", expr("request:messages[0]:content"))
+#     .where(~(col("content").contains("1.") & col("content").contains("2."))) 
+#     .where(length(col("content")) > 200)  
+#     .drop("content")
+# )
+# request_ids = payload_df.select("databricks_request_id").rdd.flatMap(lambda x: x).collect()
+# agents.enable_trace_reviews(model_name=model_fqdn, request_ids=request_ids)
 
 # COMMAND ----------
 

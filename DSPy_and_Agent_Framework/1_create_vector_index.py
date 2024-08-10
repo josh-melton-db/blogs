@@ -1,4 +1,5 @@
 # Databricks notebook source
+# DBTITLE 1,pip installs
 # MAGIC %pip install -U --quiet databricks-sdk langchain==0.2.1 langchain_core==0.2.5 langchain_community==0.2.4 tokenizers transformers
 # MAGIC dbutils.library.restartPython()
 
@@ -94,6 +95,7 @@ except ResourceDoesNotExist as ne_error:
 
 # COMMAND ----------
 
+# DBTITLE 1,Vector Search Status
 print("Vector index:\n")
 print(w.vector_search_indexes.get_index(index_name).status.message)
 

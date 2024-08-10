@@ -1,10 +1,11 @@
 # Databricks notebook source
-# DBTITLE 1,Install Libraries
+# DBTITLE 1,pip installs
 # MAGIC %pip install -U -qqqq databricks-agents mlflow mlflow-skinny databricks-vectorsearch langchain==0.2.1 langchain_core==0.2.5 langchain_community==0.2.4 
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
 
+# DBTITLE 1,Set example question
 example_question = "What are the biggest issues being reported?"
 
 # COMMAND ----------
@@ -103,6 +104,7 @@ deployment_info = agents.deploy(model_name=model_fqdn, model_version=uc_register
 
 # COMMAND ----------
 
+# DBTITLE 1,Set instructions
 agents.set_review_instructions(model_fqdn, instructions_to_reviewer)
 print("\nWaiting for endpoint to deploy.  This can take 15 - 20 minutes.", end="")
 while w.serving_endpoints.get(deployment_info.endpoint_name).state.ready == EndpointStateReady.NOT_READY or w.serving_endpoints.get(deployment_info.endpoint_name).state.config_update == EndpointStateConfigUpdate.IN_PROGRESS:
@@ -120,9 +122,11 @@ print(f"\n\nReview App: {deployment_info.review_app_url}")
 
 # COMMAND ----------
 
-# active_deployments = agents.list_deployments()
+# from databricks import agents
 # active_deployment = next((item for item in active_deployments if item.model_name == model_fqdn), None)
 # print(f"Review App URL: {active_deployment.review_app_url}")
+# active_deployments = [item for item in agents.list_deployments() if item.model_name == model_fqdn]
+# active_deployments
 
 # COMMAND ----------
 

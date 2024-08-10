@@ -1,4 +1,5 @@
 # Databricks notebook source
+# DBTITLE 1,pip installs
 # MAGIC %pip install -U -qqqq databricks-agents mlflow mlflow-skinny databricks-vectorsearch langchain==0.2.1 langchain_core==0.2.5 langchain_community==0.2.4 
 # MAGIC dbutils.library.restartPython()
 
