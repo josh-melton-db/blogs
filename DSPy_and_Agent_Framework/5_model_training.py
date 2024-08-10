@@ -1,4 +1,5 @@
 # Databricks notebook source
+# DBTITLE 1,pip installs
 # MAGIC %pip install langchain==0.2.1 langchain_core==0.2.5 langchain_community==0.2.4 
 # MAGIC %pip install --upgrade databricks-vectorsearch databricks-sdk databricks-agents
 # MAGIC %pip install --upgrade databricks-genai
@@ -6,7 +7,9 @@
 
 # COMMAND ----------
 
+# DBTITLE 1,Get Configuration
 import yaml
+import random
 
 with open("rag_config.yaml", "r") as file:
     rag_config = yaml.safe_load(file)
@@ -15,11 +18,6 @@ model_fqdn = rag_config.get("demo_config").get("model_fqdn")
 synthetic_eval_set_table_uc_fqn = rag_config.get("demo_config").get("synthetic_eval_set_table_uc_fqn")
 ft_table = rag_config.get("demo_config").get("source_table")+"_raft"
 num_docs = rag_config.get("vector_search_parameters").get("k")
-
-# COMMAND ----------
-
-import random
-
 chunk_column_name = rag_config.get("chunk_column_name")
 document_source_id = rag_config.get("document_source_id")
 chunk_table = rag_config.get("demo_config").get("chunk_table")
@@ -29,6 +27,7 @@ prompt_ls = rag_config.get("chat_prompt_template").replace("{question}.", "").sp
 
 # COMMAND ----------
 
+# DBTITLE 1,Get Index
 from databricks.vector_search.client import VectorSearchClient
 
 vsc = VectorSearchClient(disable_notice=True)
@@ -36,10 +35,11 @@ index = vsc.get_index(endpoint_name=rag_config.get("vector_search_endpoint_name"
 
 # COMMAND ----------
 
+# DBTITLE 1,Define RAFT Function
 from pyspark.sql.functions import udf
 from pyspark.sql.types import StringType
 
-@udf(returnType=StringType())
+@udf(returnType=StringType()) # Retrieve both oracle and distractor docs as described in RAFT paper
 def get_raft_docs_udf(query_text, n_retrieve_docs, n_adversarial_docs):
     retrieved = index.similarity_search(
         query_text=query_text, 
@@ -52,17 +52,22 @@ def get_raft_docs_udf(query_text, n_retrieve_docs, n_adversarial_docs):
 
 # COMMAND ----------
 
+# DBTITLE 1,Create FT Data
 from pyspark.sql.functions import col, lit, concat, length
 
-ft_data_df = ( # Return data that the system had trouble on according to our judge or our user expectations
-    spark.read.table(synthetic_eval_set_table_uc_fqn+"_eval_metrics")
-    .where(
-        (col("`response/llm_judged/relevance_to_query/rating`") == 'no') |
-        (col("`response/llm_judged/correctness/rating`") == 'no') |
-        (col("`response/llm_judged/safety/rating`") == 'no') | 
-        ~(col("response").contains("1.") & col("response").contains("2."))
-    ) # Add distractor documents as described in RAFT paper
-    .withColumn("raft_docs", get_raft_docs_udf(col("response"), lit(num_docs), lit(1))) 
+source_table = spark.read.table(synthetic_eval_set_table_uc_fqn+"_eval_metrics")
+count_source = source_table.count()
+ft_data_df = ( 
+    source_table
+    # .where( # You could return data that the system had trouble on according to our judge or our user expectations
+    #     (col("`response/llm_judged/relevance_to_query/rating`") == 'no') |
+    #     (col("`response/llm_judged/correctness/rating`") == 'no') |
+    #     (col("`response/llm_judged/safety/rating`") == 'no') | 
+    #     ~(col("response").contains("1.") & col("response").contains("2."))
+    # ) 
+    .orderBy(length("expected_response").asc()) 
+    .limit(count_source-100) # We're testing on the 100 shortest rows in the final notebook, so don't add those to training
+    .withColumn("raft_docs", get_raft_docs_udf(col("response"), lit(num_docs), lit(1))) # Add context
     .withColumn("prompt", concat(lit(prompt_ls[0]), col("raft_docs"), lit(prompt_ls[1]), col("request")))
     .select("prompt", "expected_response")
     .withColumnRenamed("expected_response", "response")
@@ -72,6 +77,7 @@ ft_data_df.display()
 
 # COMMAND ----------
 
+# DBTITLE 1,Fine Tune Model
 from databricks.model_training import foundation_model as fm
 #Return the current cluster id to use to read the dataset and send it to the fine tuning cluster. See https://docs.databricks.com/en/large-language-models/foundation-model-training/create-fine-tune-run.html#cluster-id
 def get_current_cluster_id():
@@ -97,11 +103,14 @@ print(run)
 
 # COMMAND ----------
 
+# DBTITLE 1,Model Serving Deployment
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.serving import ServedEntityInput, EndpointCoreConfigInput, AutoCaptureConfigInput
 from utils.demo import wait_for_run_to_finish, get_latest_model_version
 
 # wait_for_run_to_finish(run) # TODO: fix this, spins forever
+import time
+sleep(15*60)
 
 source_table_ls = rag_config.get("demo_config").get("source_table").split(".")
 catalog = source_table_ls[0]
@@ -136,6 +145,7 @@ else:
 
 # COMMAND ----------
 
+# DBTITLE 1,Query Human Evals
 # from pyspark.sql.functions import row_number, expr, desc
 # from pyspark.sql.window import Window
 
@@ -151,6 +161,7 @@ else:
 
 # COMMAND ----------
 
+# DBTITLE 1,Query Payloads
 # from pyspark.sql.functions import from_json, col, array, expr
 
 # payload_df = (
