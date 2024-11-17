@@ -1,0 +1,7 @@
+dash
+dash-bootstrap-components
+databricks-sdk
+python-dotenv
+networkx
+matplotlib
+dash-cytoscape

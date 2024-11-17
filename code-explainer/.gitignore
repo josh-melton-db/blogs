@@ -1,0 +1,7 @@
+.databricks
+.env
+.envrc
+.venv
+.vscode
+__pycache__/
+*.pyc
