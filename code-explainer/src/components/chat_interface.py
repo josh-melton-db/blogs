@@ -2,6 +2,7 @@ from dash import html, dcc, Input, Output, State, ctx
 import dash_bootstrap_components as dbc
 from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
 from ..services.code_analyzer import CodeAnalyzer
+import re
 
 class ChatInterface:
     def __init__(self, app, workspace_client, endpoint_name):
@@ -114,6 +115,17 @@ class ChatInterface:
             
             return chat_history
 
+        def clean_message_content(content):
+            # Use a loop to repeatedly remove content between tags
+            while True:
+                # Remove both tool_call and tool_call_result tags
+                new_content = re.sub(r'<tool_call>[\s\S]*?</tool_call>|<tool_call_result>[\s\S]*?</tool_call_result>', '', content)
+                if new_content == content:
+                    # No more replacements to be made
+                    break
+                content = new_content
+            return content.strip()
+
         @self.app.callback(
             Output('chat-history', 'children'),
             Input('chat-history-store', 'data')
@@ -125,7 +137,8 @@ class ChatInterface:
             chat_elements = []
             for message in chat_history:
                 role = message['role']
-                content = message['content']
+                # Clean the content before displaying
+                content = clean_message_content(message['content'])
                 
                 style = {
                     'padding': '10px',

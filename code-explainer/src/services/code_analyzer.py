@@ -180,16 +180,26 @@ class CodeAnalyzer:
         # Get the subgraph for the variable
         subgraph = self.get_variable_dependencies(variable_name)
         
-        # Add node attributes for visualization
-        for node in subgraph.nodes:
-            if str(node).startswith("Constant:"):
-                subgraph.nodes[node]['style'] = 'constant'
-            else:
-                subgraph.nodes[node]['style'] = 'variable'
-                if node == variable_name:
-                    subgraph.nodes[node]['style'] = 'target'
+        # Calculate eigenvector centrality
+        centrality = nx.eigenvector_centrality(subgraph)
+
+        # Get top 25 nodes by centrality
+        top_nodes = sorted(centrality.items(), key=lambda x: x[1], reverse=True)[:25]
+        related_items = [node[0] for node in top_nodes]
+
+        # Create subgraph with only the top nodes
+        subgraph_subset = subgraph.subgraph(related_items)
         
-        return subgraph
+        # Add node attributes for visualization
+        for node in subgraph_subset.nodes:
+            if str(node).startswith("Constant:"):
+                subgraph_subset.nodes[node]['style'] = 'constant'
+            else:
+                subgraph_subset.nodes[node]['style'] = 'variable'
+                if node == variable_name:
+                    subgraph_subset.nodes[node]['style'] = 'target'
+        
+        return subgraph_subset
 
     def get_symbol_details(self, file_path, symbol_name=None):
         """
