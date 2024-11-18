@@ -3,12 +3,17 @@ from databricks.sdk import WorkspaceClient
 import dash_bootstrap_components as dbc
 from ..services.code_analyzer import CodeAnalyzer
 import dash_cytoscape as cyto
+import os
 
 class CatalogPicker:
     def __init__(self, app, workspace_client):
         self.app = app
         self.w = workspace_client
         self.code_analyzer = CodeAnalyzer(workspace_client)
+        self.default_catalog = os.getenv('default_catalog', 'default')
+        self.default_schema = os.getenv('default_schema', 'default')
+        self.default_volume = os.getenv('default_volume', 'default')
+        self.default_file = os.getenv('default_file', '')
         self._create_callbacks()
 
     def create_layout(self):
@@ -27,7 +32,7 @@ class CatalogPicker:
             dcc.Dropdown(
                 id='catalog-dropdown',
                 options=catalog_options,
-                value='josh_melton',
+                value=self.default_catalog,
                 placeholder='Select a catalog...',
                 className='mb-3'
             ),
@@ -88,8 +93,8 @@ class CatalogPicker:
                     {'label': schema.name, 'value': schema.name}
                     for schema in schemas
                 ]
-                # Updated default schema
-                default_schema = 'code_explainer' if selected_catalog == 'josh_melton' else None
+                # Updated default schema logic
+                default_schema = self.default_schema if selected_catalog == self.default_catalog else None
                 return schema_options, default_schema
             except Exception as e:
                 print(f'Error fetching schemas: {str(e)}')
@@ -114,8 +119,11 @@ class CatalogPicker:
                     {'label': volume.name, 'value': volume.name}
                     for volume in volumes
                 ]
-                # Updated default volume and condition
-                default_volume = 'c_code' if selected_schema == 'code_explainer' else None
+                # Updated default volume logic
+                default_volume = self.default_volume if (
+                    selected_catalog == self.default_catalog and 
+                    selected_schema == self.default_schema
+                ) else None
                 return volume_options, default_volume
             except Exception as e:
                 print(f'Error fetching volumes: {str(e)}')
@@ -133,23 +141,24 @@ class CatalogPicker:
                 return [], None
             
             try:
-                # Get the full volume path
                 volume_path = f'/Volumes/{selected_catalog}/{selected_schema}/{selected_volume}'
-                
-                # List files in the volume
                 files = self.w.files.list_directory_contents(volume_path)
                 file_options = [
                     {'label': entry.path.split('/')[-1], 'value': entry.path}
                     for entry in files
-                    if entry.path.endswith('.c')  # Only show C files
+                    if entry.path.endswith('.c')
                 ]
                 
-                # Pre-select btree.c if it exists
+                # Updated default file logic
                 default_value = next(
                     (opt['value'] for opt in file_options 
-                     if opt['label'] == 'btree.c'),
+                     if opt['label'] == self.default_file),
                     None
-                )
+                ) if (
+                    selected_catalog == self.default_catalog and 
+                    selected_schema == self.default_schema and 
+                    selected_volume == self.default_volume
+                ) else None
                 
                 return file_options, default_value
             except Exception as e:

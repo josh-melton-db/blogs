@@ -146,7 +146,14 @@ class ChatInterface:
                     })
                 
                 chat_elements.append(
-                    html.Div(content, style=style)
+                    html.Div([
+                        dcc.Markdown(
+                            content,
+                            # Add these styles to properly format code blocks
+                            style={'margin': '0'},
+                            className='markdown-content'
+                        )
+                    ], style=style)
                 )
             
             return chat_elements
@@ -164,18 +171,46 @@ class ChatInterface:
                     return f'var:{node_id}'
             return None
 
+        # Add callback to show/hide typing indicator
+        @self.app.callback(
+            Output('typing-container', 'style'),
+            Input('chat-history-store', 'data'),
+            prevent_initial_call=True
+        )
+        def toggle_typing_indicator(chat_history):
+            if not chat_history:
+                return {'display': 'none'}
+            
+            # Show typing indicator when last message is from user
+            if chat_history and chat_history[-1]['role'] == 'user':
+                return {
+                    'display': 'block',
+                    'margin-left': '10px',
+                    'margin-bottom': '10px'
+                }
+            return {'display': 'none'}
+
     def create_chat_layout(self):
         return html.Div([
-            dcc.Store(id='chat-history-store', data=[]),
             html.Div(
                 id='chat-history', 
                 style={
-                    'height': '200px',  # Reduced from 400px
+                    'height': '300px',
                     'overflow-y': 'auto',
                     'border': '1px solid #ddd',
-                    'border-radius': '4px',
-                    'margin-bottom': '10px'
+                    'border-radius': '4px 4px 0 0',
+                    'margin-bottom': '0px',
+                    'padding': '10px'
                 }
+            ),
+            # Add typing indicator
+            html.Div(
+                html.Div(
+                    "...",
+                    className="typing-indicator"
+                ),
+                id="typing-container",
+                style={'display': 'none'}  # Hidden by default
             ),
             dbc.Row([
                 dbc.Col([
@@ -190,6 +225,19 @@ class ChatInterface:
                     dbc.Button('Send', id='send-button', color='primary', className='me-2'),
                     dbc.Button('Clear', id='clear-button', color='secondary')
                 ], width=2)
-            ], className='mt-2')
-        ], className='bg-white p-3 rounded shadow-sm')
+            ], className='mt-0 p-2')
+        ], className='bg-white rounded shadow-sm chat-container', style={
+            'position': 'fixed',
+            'bottom': '-10px',
+            'left': '20px',
+            'right': '20px',
+            'z-index': '1000',
+            'padding': '10px',
+            'background': 'white',
+            'box-shadow': '0 -2px 10px rgba(0,0,0,0.1)',
+            'border-radius': '8px',
+            'height': 'auto',
+            'max-height': '400px'
+        })
+
 

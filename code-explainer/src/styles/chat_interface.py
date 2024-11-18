@@ -56,4 +56,23 @@ chat_interface_styles = '''
     box-shadow: none;
     border-color: #80bdff;
 }
+
+/* Typing indicator */
+.typing-indicator {
+    background-color: #E8E8E8;
+    padding: 8px 16px;
+    border-radius: 15px;
+    display: inline-block;
+    font-size: 14px;
+    animation: pulse 1.5s infinite;
+    margin-left: 10px;
+    margin-bottom: 10px;
+    color: #666;
+}
+
+@keyframes pulse {
+    0% { opacity: .4; }
+    50% { opacity: 1; }
+    100% { opacity: .4; }
+}
 '''

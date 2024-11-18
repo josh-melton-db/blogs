@@ -5,4 +5,12 @@ command: [
 
 env:
   - name: "SERVING_ENDPOINT"
-    value: "databricks-meta-llama-3-1-70b-instruct"
+    valueFrom: "SERVING_ENDPOINT"
+  - name: "default_catalog"
+    value: "josh_melton"
+  - name: "default_schema"
+    value: "code_explainer"
+  - name: "default_volume"
+    value: "c_code"
+  - name: "default_file"
+    value: "btree.c"

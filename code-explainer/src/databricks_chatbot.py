@@ -126,6 +126,9 @@ class DatabricksChatbot:
                 ], className='col-9'),
             ], className='row mb-3'),
             
+            # Add a spacer div to push chat interface to bottom
+            html.Div(style={'height': '400px'}),  # Adjust height as needed
+            
             # Bottom row with chat interface
             html.Div([
                 html.Div([
@@ -153,6 +156,31 @@ class DatabricksChatbot:
             .clickable-symbol:hover {{
                 text-decoration: underline;
                 opacity: 0.8;
+            }}
+            
+            /* Markdown styling */
+            .markdown-content pre {{
+                background-color: #f8f9fa;
+                padding: 8px;
+                border-radius: 4px;
+                margin: 8px 0;
+                overflow-x: auto;
+            }}
+            
+            .markdown-content code {{
+                background-color: #f8f9fa;
+                padding: 2px 4px;
+                border-radius: 4px;
+                font-family: monospace;
+            }}
+            
+            .markdown-content p {{
+                margin: 0;
+            }}
+            
+            .markdown-content ul, .markdown-content ol {{
+                margin: 8px 0;
+                padding-left: 20px;
             }}
             
             {catalog_picker_styles}
