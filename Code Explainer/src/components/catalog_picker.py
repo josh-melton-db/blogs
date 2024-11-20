@@ -1,4 +1,4 @@
-from dash import html, dcc, Input, Output, State, ALL, dash
+from dash import html, dcc, Input, Output, State, ALL, dash, callback_context
 from databricks.sdk import WorkspaceClient
 import dash_bootstrap_components as dbc
 from ..services.code_analyzer import CodeAnalyzer
@@ -253,25 +253,81 @@ class CatalogPicker:
                 return {'display': 'none'}, []
 
         @self.app.callback(
+            Output('symbol-search-dropdown', 'value'),
+            Output('dependency-graph', 'elements'),
             Output('symbol-details', 'children'),
-            Input('symbol-search-dropdown', 'value')
+            Input('symbol-search-dropdown', 'value'),
+            Input('dependency-graph', 'tapNodeData'),
+            Input('toggle-view-button', 'n_clicks'),
+            Input({'type': 'var-link', 'name': ALL}, 'n_clicks'),
+            State({'type': 'var-link', 'name': ALL}, 'id'),
+            prevent_initial_call=True
         )
-        def update_symbol_details(selected_value):
-            if not selected_value:
-                return ''
+        def update_all_components(dropdown_value, tapped_node, n_clicks, link_clicks, link_ids):
+            ctx = callback_context
+            if not ctx.triggered:
+                return dash.no_update, dash.no_update, dash.no_update
             
+            trigger_id = ctx.triggered[0]['prop_id']
+            
+            # Determine the selected value based on the trigger
+            if any(link_clicks):  # Check if any link was clicked
+                clicked_idx = next((i for i, clicks in enumerate(link_clicks) if clicks), None)
+                if clicked_idx is not None and clicked_idx < len(link_ids):
+                    selected_value = f"var::{link_ids[clicked_idx]['name']}"
+                    # Force update the dropdown value when a link is clicked
+                    dropdown_value = selected_value
+            elif '.tapNodeData' in trigger_id and tapped_node:
+                selected_value = f"var::{tapped_node['id']}"
+            else:
+                selected_value = dropdown_value
+
+            if not selected_value:
+                return None, [], ''
+
             try:
+                # Ensure consistent formatting
+                if ':' in selected_value and not selected_value.startswith('var::'):
+                    selected_value = 'var::' + selected_value.split(':')[-1]
+                
                 if not selected_value.startswith('var::'):
-                    return html.Div("Invalid selection format")
-                    
+                    return selected_value, [], html.Div(f"Invalid selection format: {selected_value}")
+                
                 symbol_name = selected_value[5:]
-                if not symbol_name:  # Check if we have a name after the prefix
-                    return html.Div("No variable name provided")
-                    
+                
+                # Generate graph elements
+                show_all = n_clicks and n_clicks % 2 == 1
+                graph = self.code_analyzer.visualize_dependencies(symbol_name, show_all=show_all)
+                elements = []
+                
+                # Add nodes
+                for node in graph.nodes():
+                    node_data = {
+                        'data': {
+                            'id': str(node),
+                            'label': str(node),
+                            'type': 'constant' if str(node).startswith('Constant:') 
+                                    else 'target' if node == symbol_name 
+                                    else 'variable'
+                        }
+                    }
+                    elements.append(node_data)
+                
+                # Add edges
+                for source, target in graph.edges():
+                    edge_data = {
+                        'data': {
+                            'source': str(source),
+                            'target': str(target)
+                        }
+                    }
+                    elements.append(edge_data)
+                
+                # Generate symbol details
                 var_info = self.code_analyzer.get_variable_info(symbol_name)
                 if not var_info:
-                    return html.Div(f"No information found for variable: {symbol_name}")
-                    
+                    return selected_value, elements, html.Div(f"No information found for variable: {symbol_name}")
+                
                 # Create clickable links for upstream variables
                 upstream_links = []
                 if var_info.get('upstream'):
@@ -300,7 +356,7 @@ class CatalogPicker:
                         for name in var_info['downstream']
                     ]
 
-                return html.Div([
+                details = html.Div([
                     html.H5(f"Variable: {symbol_name}"),
                     html.P([
                         html.Strong("Type: "), var_info.get('type', 'unknown'),
@@ -308,20 +364,42 @@ class CatalogPicker:
                         html.Strong("Function: "), var_info.get('function', 'global'),
                         html.Br(),
                         html.Strong("Is Pointer: "), str(var_info.get('is_pointer', False)),
-                        html.Br(),
+                    ]),
+                    html.Div([
                         html.Strong("Upstream: "),
-                        *([item for pair in zip(upstream_links, [', '] * (len(upstream_links)-1) + ['']) 
-                          for item in pair] if upstream_links else ['none']),
-                        html.Br(),
+                        html.Div(
+                            [item for pair in zip(upstream_links, [', '] * (len(upstream_links)-1) + ['']) 
+                             for item in pair] if upstream_links else ['none'],
+                            style={
+                                'maxHeight': '100px',
+                                'overflowY': 'auto',
+                                'padding': '8px',
+                                'backgroundColor': '#f8f9fa',
+                                'borderRadius': '4px',
+                                'marginTop': '4px',
+                                'marginBottom': '8px'
+                            }
+                        ),
                         html.Strong("Downstream: "),
-                        *([item for pair in zip(downstream_links, [', '] * (len(downstream_links)-1) + ['']) 
-                          for item in pair] if downstream_links else ['none'])
+                        html.Div(
+                            [item for pair in zip(downstream_links, [', '] * (len(downstream_links)-1) + ['']) 
+                             for item in pair] if downstream_links else ['none'],
+                            style={
+                                'maxHeight': '100px',
+                                'overflowY': 'auto',
+                                'padding': '8px',
+                                'backgroundColor': '#f8f9fa',
+                                'borderRadius': '4px',
+                                'marginTop': '4px'
+                            }
+                        )
                     ])
                 ])
-            
+                
+                return selected_value, elements, details
+                
             except Exception as e:
-                print(f"Error showing symbol details: {str(e)}")
-                return html.Div(f"Error: {str(e)}")
+                return selected_value, [], html.Div(f"Error: {str(e)}")
 
         # Add a new callback to handle variable link clicks
         @self.app.callback(
@@ -379,53 +457,3 @@ class CatalogPicker:
             if n_clicks and n_clicks % 2 == 1:
                 return "Show Focused View"
             return "Show All Dependencies"
-
-        @self.app.callback(
-            Output('dependency-graph', 'elements'),
-            Input('symbol-search-dropdown', 'value'),
-            Input('toggle-view-button', 'n_clicks')
-        )
-        def update_dependency_graph(selected_value, n_clicks):
-            if not selected_value:
-                return []
-            
-            try:
-                if selected_value.startswith('var::'):
-                    symbol_type = 'var'
-                    symbol_name = selected_value[5:]
-                    show_all = n_clicks and n_clicks % 2 == 1
-                    graph = self.code_analyzer.visualize_dependencies(symbol_name, show_all=show_all)
-                    
-                    # Convert networkx graph to cytoscape format
-                    elements = []
-                    
-                    # Add nodes
-                    for node in graph.nodes():
-                        node_data = {
-                            'data': {
-                                'id': str(node),
-                                'label': str(node),
-                                'type': 'constant' if str(node).startswith('Constant:') 
-                                        else 'target' if node == symbol_name 
-                                        else 'variable'
-                            }
-                        }
-                        elements.append(node_data)
-                    
-                    # Add edges
-                    for source, target in graph.edges():
-                        edge_data = {
-                            'data': {
-                                'source': str(source),
-                                'target': str(target)
-                            }
-                        }
-                        elements.append(edge_data)
-                    
-                    return elements
-                
-                return []
-                
-            except Exception as e:
-                print(f"Error creating dependency graph: {str(e)}")
-                return []

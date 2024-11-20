@@ -84,7 +84,7 @@ class ChatInterface:
                                             )
 
                                     code_context = (
-                                        f"\nContext:\n"
+                                        f"Context about the code being discussed:\n"
                                         f"- File: {file_path}\n"
                                         f"- Variable: {symbol_name}\n"
                                         f"- Type: {var_info['type']}\n"
@@ -94,27 +94,26 @@ class ChatInterface:
                                         + ('\n'.join(upstream_details) if upstream_details else "  - none")
                                         + f"\n\nDownstream Dependencies:\n"
                                         + ('\n'.join(downstream_details) if downstream_details else "  - none")
-                                        + "\n"
+                                        + "\n\n---\nUser Question:\n"
                                     )
                     except Exception as e:
-                        code_context = f"\nNote: Failed to get variable details: {str(e)}\n"
+                        code_context = f"Note: Failed to get variable details: {str(e)}\n---\nUser Question:\n"
                 
                 # Create a separate messages list for the API call
                 api_messages = []
                 
-                # Add context as a system message if it exists
-                if code_context:
-                    api_messages.append(ChatMessage(
-                        content=code_context,
-                        role=ChatMessageRole.SYSTEM
-                    ))
-                
-                # Add all user and assistant messages from chat history
-                for msg in chat_history:
+                # Add all previous messages from chat history except the last user message
+                for msg in chat_history[:-1]:
                     api_messages.append(ChatMessage(
                         content=msg['content'],
                         role=ChatMessageRole[msg['role'].upper()]
                     ))
+                
+                # Add the last user message with context prepended
+                api_messages.append(ChatMessage(
+                    content=code_context + last_message if code_context else last_message,
+                    role=ChatMessageRole.USER
+                ))
                 
                 # Get AI response
                 response = self.w.serving_endpoints.query(
