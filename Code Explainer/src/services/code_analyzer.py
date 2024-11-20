@@ -8,7 +8,7 @@ class Variable:
     name: str
     type: str
     is_pointer: bool
-    dependencies: Set[str]  # Names of variables this one depends on
+    upstream: Set[str]  # Names of variables this one depends on
     function_name: Optional[str]  # Which function this variable is declared in, if any
 
 @dataclass
@@ -20,7 +20,9 @@ class Function:
 class CodeAnalyzer:
     def __init__(self, w):
         self.w = w
-        self.dependency_graph = nx.DiGraph()  # Directed graph for dependencies
+        self.dependency_graph = nx.DiGraph()
+        self.current_file = None  # Add this to track current file
+        self.parsed_files = {}    # Add this to store parsed results
         
     def read_file_contents(self, file_path: str) -> str:
         """Read contents of a single file from the volume"""
@@ -34,8 +36,14 @@ class CodeAnalyzer:
 
     def parse_c_file(self, file_path: str) -> Dict[str, Function]:
         """Parse C file and extract variable relationships"""
-        # Clear existing graph
+        # Check if we've already parsed this file
+        if file_path in self.parsed_files:
+            self.dependency_graph = self.parsed_files[file_path]['graph']
+            return self.parsed_files[file_path]['functions']
+
+        # Clear graph for new parse
         self.dependency_graph.clear()
+        self.current_file = file_path
         
         content = self.read_file_contents(file_path)
         
@@ -79,8 +87,13 @@ class CodeAnalyzer:
                 functions[func_name] = func
                 
             except Exception as e:
-                print(f"Error parsing function {match.group(2)}: {str(e)}")
                 continue
+        
+        # Store results before returning
+        self.parsed_files[file_path] = {
+            'graph': self.dependency_graph.copy(),
+            'functions': functions.copy()
+        }
         
         return functions
 
@@ -94,9 +107,13 @@ class CodeAnalyzer:
 
     def extract_variables(self, body: str, func: Function):
         """Extract variable declarations from function body"""
-        # Pattern for variable declarations
-        var_pattern = r'\b(?:static\s+)?([a-zA-Z_][a-zA-Z0-9_]*\s*\*?)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[=;]'
+        # Updated pattern to catch more variable declarations
+        var_pattern = r'\b(?:static\s+)?(?:const\s+)?([a-zA-Z_][a-zA-Z0-9_]*(?:\s*\*)*)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:[=;]|[\[{])'
         
+        # Also look for function parameters
+        param_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*(?:\s*\*)*)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:,|\))'
+        
+        # Process regular variable declarations
         for match in re.finditer(var_pattern, body):
             type_name = match.group(1).strip()
             var_name = match.group(2)
@@ -107,7 +124,24 @@ class CodeAnalyzer:
                 name=var_name,
                 type=type_name,
                 is_pointer=is_pointer,
-                dependencies=set(),
+                upstream=set(),
+                function_name=func.name
+            )
+            
+            func.variables[var_name] = var
+        
+        # Process function parameters
+        for match in re.finditer(param_pattern, body):
+            type_name = match.group(1).strip()
+            var_name = match.group(2)
+            is_pointer = '*' in type_name
+            type_name = type_name.replace('*', '').strip()
+            
+            var = Variable(
+                name=var_name,
+                type=type_name,
+                is_pointer=is_pointer,
+                upstream=set(),
                 function_name=func.name
             )
             
@@ -115,15 +149,14 @@ class CodeAnalyzer:
 
     def analyze_dependencies(self, body: str, func: Function):
         """Analyze variable dependencies within function body"""
-        # For each variable, find where it's used in assignments
+        # First, add all variables to the graph with their attributes
         for var_name, var in func.variables.items():
-            # Add node for this variable
-            self.dependency_graph.add_node(
-                var_name, 
-                type=var.type, 
-                is_pointer=var.is_pointer,
-                function=func.name
-            )
+            attrs = {
+                'type': var.type,
+                'is_pointer': var.is_pointer,
+                'function': func.name
+            }
+            self.dependency_graph.add_node(var_name, **attrs)
             
             # Look for assignments to this variable
             assignment_pattern = fr'\b{var_name}\s*=\s*([^;]+);'
@@ -133,7 +166,7 @@ class CodeAnalyzer:
                 # Find all variables used in the right-hand side
                 for other_var in func.variables:
                     if other_var != var_name and re.search(fr'\b{other_var}\b', rhs):
-                        var.dependencies.add(other_var)
+                        var.upstream.add(other_var)
                         # Add edge to dependency graph (other_var -> var_name)
                         self.dependency_graph.add_edge(other_var, var_name)
                 
@@ -163,34 +196,84 @@ class CodeAnalyzer:
 
     def get_variable_info(self, variable_name: str) -> Dict:
         """Get detailed information about a variable"""
-        if variable_name not in self.dependency_graph:
+        matching_nodes = [
+            node for node in self.dependency_graph.nodes 
+            if node == variable_name
+        ]
+        
+        if not matching_nodes:
             return {}
         
+        node = matching_nodes[0]
+        attrs = dict(self.dependency_graph.nodes[node])
+        
+        # Create subgraphs for upstream and downstream dependencies
+        upstream = list(self.dependency_graph.predecessors(node))
+        downstream = list(self.dependency_graph.successors(node))
+        
+        # Sort upstream dependencies by importance
+        if upstream:
+            upstream_subgraph = self.dependency_graph.subgraph(upstream)
+            try:
+                centrality = nx.eigenvector_centrality(upstream_subgraph)
+            except:
+                try:
+                    centrality = nx.degree_centrality(upstream_subgraph)
+                except:
+                    centrality = {node: 1.0 for node in upstream_subgraph.nodes()}
+            upstream = sorted(upstream, key=lambda x: centrality.get(x, 0), reverse=True)
+        
+        # Sort downstream dependencies by importance
+        if downstream:
+            downstream_subgraph = self.dependency_graph.subgraph(downstream)
+            try:
+                centrality = nx.eigenvector_centrality(downstream_subgraph)
+            except:
+                try:
+                    centrality = nx.degree_centrality(downstream_subgraph)
+                except:
+                    centrality = {node: 1.0 for node in downstream_subgraph.nodes()}
+            downstream = sorted(downstream, key=lambda x: centrality.get(x, 0), reverse=True)
+        
         return {
-            'name': variable_name,
-            'type': self.dependency_graph.nodes[variable_name].get('type'),
-            'function': self.dependency_graph.nodes[variable_name].get('function'),
-            'is_pointer': self.dependency_graph.nodes[variable_name].get('is_pointer'),
-            'dependencies': list(self.dependency_graph.predecessors(variable_name)),
-            'dependents': list(self.dependency_graph.successors(variable_name))
+            'name': node,
+            'type': attrs.get('type'),
+            'function': attrs.get('function'),
+            'is_pointer': attrs.get('is_pointer'),
+            'upstream': upstream,
+            'downstream': downstream
         }
 
-    def visualize_dependencies(self, variable_name: str) -> nx.DiGraph:
+    def visualize_dependencies(self, variable_name: str, show_all: bool = False) -> nx.DiGraph:
         """Get a graph visualization for a variable's dependencies"""
         # Get the subgraph for the variable
         subgraph = self.get_variable_dependencies(variable_name)
         
-        # Calculate eigenvector centrality
-        centrality = nx.eigenvector_centrality(subgraph)
+        if show_all:
+            # Return the full subgraph
+            for node in subgraph.nodes:
+                if str(node).startswith("Constant:"):
+                    subgraph.nodes[node]['style'] = 'constant'
+                else:
+                    subgraph.nodes[node]['style'] = 'variable'
+                    if node == variable_name:
+                        subgraph.nodes[node]['style'] = 'target'
+            return subgraph
+        
+        # Otherwise, show focused view with top 25 nodes
+        try:
+            centrality = nx.eigenvector_centrality(subgraph)
+        except:
+            try:
+                centrality = nx.degree_centrality(subgraph)
+            except:
+                centrality = {node: 1.0 for node in subgraph.nodes()}
 
-        # Get top 25 nodes by centrality
         top_nodes = sorted(centrality.items(), key=lambda x: x[1], reverse=True)[:25]
         related_items = [node[0] for node in top_nodes]
 
-        # Create subgraph with only the top nodes
         subgraph_subset = subgraph.subgraph(related_items)
         
-        # Add node attributes for visualization
         for node in subgraph_subset.nodes:
             if str(node).startswith("Constant:"):
                 subgraph_subset.nodes[node]['style'] = 'constant'

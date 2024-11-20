@@ -1,4 +1,4 @@
-from dash import html, dcc, Input, Output, State
+from dash import html, dcc, Input, Output, State, ALL, dash
 from databricks.sdk import WorkspaceClient
 import dash_bootstrap_components as dbc
 from ..services.code_analyzer import CodeAnalyzer
@@ -6,10 +6,10 @@ import dash_cytoscape as cyto
 import os
 
 class CatalogPicker:
-    def __init__(self, app, workspace_client):
+    def __init__(self, app, workspace_client, code_analyzer):
         self.app = app
         self.w = workspace_client
-        self.code_analyzer = CodeAnalyzer(workspace_client)
+        self.code_analyzer = code_analyzer
         self.default_catalog = os.getenv('default_catalog', 'default')
         self.default_schema = os.getenv('default_schema', 'default')
         self.default_volume = os.getenv('default_volume', 'default')
@@ -61,20 +61,20 @@ class CatalogPicker:
                 className='mb-3'
             ),
             
-            # Parse button
+            # Parse result and view toggle in a row
             html.Div([
-                dbc.Button(
-                    'Parse File',
-                    id='parse-file-button',
-                    color='primary',
-                    className='me-2',
-                    style={'display': 'none'}
-                ),
                 html.Div(
                     id='parse-result',
-                    style={'display': 'inline-block'}
+                    style={'display': 'inline-block', 'marginRight': '10px'}
+                ),
+                dbc.Button(
+                    "Show All Dependencies",
+                    id='toggle-view-button',
+                    color='secondary',
+                    size='sm',
+                    style={'display': 'none'}
                 )
-            ], className='d-flex align-items-center mb-3'),
+            ], className='d-flex align-items-center')
         ], className='catalog-picker bg-white p-3 rounded shadow-sm')
 
     def _create_callbacks(self):
@@ -166,33 +166,22 @@ class CatalogPicker:
                 return [], None
 
         @self.app.callback(
-            Output('parse-file-button', 'style'),
-            Input('file-picker-dropdown', 'value')
-        )
-        def toggle_parse_button(selected_file):
-            if selected_file and selected_file.endswith('.c'):
-                return {'display': 'block'}
-            return {'display': 'none'}
-
-        @self.app.callback(
             Output('parse-result', 'children'),
-            Input('parse-file-button', 'n_clicks'),
-            State('file-picker-dropdown', 'value'),
+            Output('symbol-search-dropdown', 'value', allow_duplicate=True),
+            Input('file-picker-dropdown', 'value'),
             prevent_initial_call=True
         )
-        def parse_selected_file(n_clicks, file_path):
-            if not n_clicks or not file_path:
-                return ''
+        def auto_parse_file(file_path):
+            if not file_path:
+                return '', None
             
             try:
                 self.code_analyzer.parse_c_file(file_path)
                 return html.Div('File parsed successfully!', 
-                              style={'color': 'green', 'marginTop': '10px'})
+                              style={'color': 'green', 'marginTop': '10px'}), None
             except Exception as e:
-                # Create a pre-formatted block to preserve whitespace and formatting
                 error_message = str(e)
                 if "Parse error near line" in error_message:
-                    # It's our detailed error message
                     return html.Div([
                         html.Div('Parse error:', 
                                 style={'color': 'red', 'marginTop': '10px', 'fontWeight': 'bold'}),
@@ -203,9 +192,8 @@ class CatalogPicker:
                                       'whiteSpace': 'pre-wrap',
                                       'fontFamily': 'monospace',
                                       'fontSize': '0.9em'})
-                    ])
+                    ]), None
                 else:
-                    # It's a different kind of error
                     return html.Div([
                         html.Div('Error:', 
                                 style={'color': 'red', 'marginTop': '10px', 'fontWeight': 'bold'}),
@@ -215,18 +203,7 @@ class CatalogPicker:
                                       'borderRadius': '4px',
                                       'whiteSpace': 'pre-wrap',
                                       'fontFamily': 'monospace'})
-                    ])
-
-        # Add new callback to auto-click parse button when file is selected
-        @self.app.callback(
-            Output('parse-file-button', 'n_clicks'),
-            Input('file-picker-dropdown', 'value'),
-            prevent_initial_call=True
-        )
-        def auto_click_parse(selected_file):
-            if selected_file and selected_file.endswith('.c'):
-                return 1
-            return None
+                    ]), None
 
         @self.app.callback(
             Output('symbol-search-container', 'style'),
@@ -263,8 +240,8 @@ class CatalogPicker:
                         
                         options.append({
                             'label': label,
-                            'value': f"var:{var}",
-                            'search': var  # For better searching
+                            'value': f"var::{var}",
+                            'search': var
                         })
                 
                 # Sort options alphabetically by variable name
@@ -284,51 +261,140 @@ class CatalogPicker:
                 return ''
             
             try:
-                # Parse the selection
-                symbol_type, symbol_name = selected_value.split(':')
+                if not selected_value.startswith('var::'):
+                    return html.Div("Invalid selection format")
+                    
+                symbol_name = selected_value[5:]
+                if not symbol_name:  # Check if we have a name after the prefix
+                    return html.Div("No variable name provided")
+                    
+                var_info = self.code_analyzer.get_variable_info(symbol_name)
+                if not var_info:
+                    return html.Div(f"No information found for variable: {symbol_name}")
+                    
+                # Create clickable links for upstream variables
+                upstream_links = []
+                if var_info.get('upstream'):
+                    upstream_links = [
+                        html.A(
+                            name,
+                            href='#',
+                            id={'type': 'var-link', 'name': name},
+                            className='clickable-symbol me-2',
+                            n_clicks=0
+                        ) if self.code_analyzer.get_variable_info(name) else html.Span(name)
+                        for name in var_info['upstream']
+                    ]
                 
-                if symbol_type == 'var':
-                    # Get variable details
-                    var_info = self.code_analyzer.get_variable_info(symbol_name)
-                    if var_info:
-                        return html.Div([
-                            html.H5(f"Variable: {symbol_name}"),
-                            html.P([
-                                html.Strong("Type: "), var_info['type'],
-                                html.Br(),
-                                html.Strong("Function: "), var_info['function'] or 'global',
-                                html.Br(),
-                                html.Strong("Is Pointer: "), str(var_info['is_pointer']),
-                                html.Br(),
-                                html.Strong("Dependencies: "), 
-                                ', '.join(var_info['dependencies']) or 'none',
-                                html.Br(),
-                                html.Strong("Dependent Variables: "), 
-                                ', '.join(var_info['dependents']) or 'none'
-                            ])
-                        ])
-                
-                return html.Div("No details available")
-                
+                # Create clickable links for downstream variables
+                downstream_links = []
+                if var_info.get('downstream'):
+                    downstream_links = [
+                        html.A(
+                            name,
+                            href='#',
+                            id={'type': 'var-link', 'name': name},
+                            className='clickable-symbol me-2',
+                            n_clicks=0
+                        ) if self.code_analyzer.get_variable_info(name) else html.Span(name)
+                        for name in var_info['downstream']
+                    ]
+
+                return html.Div([
+                    html.H5(f"Variable: {symbol_name}"),
+                    html.P([
+                        html.Strong("Type: "), var_info.get('type', 'unknown'),
+                        html.Br(),
+                        html.Strong("Function: "), var_info.get('function', 'global'),
+                        html.Br(),
+                        html.Strong("Is Pointer: "), str(var_info.get('is_pointer', False)),
+                        html.Br(),
+                        html.Strong("Upstream: "),
+                        *([item for pair in zip(upstream_links, [', '] * (len(upstream_links)-1) + ['']) 
+                          for item in pair] if upstream_links else ['none']),
+                        html.Br(),
+                        html.Strong("Downstream: "),
+                        *([item for pair in zip(downstream_links, [', '] * (len(downstream_links)-1) + ['']) 
+                          for item in pair] if downstream_links else ['none'])
+                    ])
+                ])
+            
             except Exception as e:
                 print(f"Error showing symbol details: {str(e)}")
                 return html.Div(f"Error: {str(e)}")
 
+        # Add a new callback to handle variable link clicks
         @self.app.callback(
-            Output('dependency-graph', 'elements'),
+            Output('symbol-search-dropdown', 'value', allow_duplicate=True),
+            Input({'type': 'var-link', 'name': ALL}, 'n_clicks'),
+            State({'type': 'var-link', 'name': ALL}, 'id'),
+            prevent_initial_call=True
+        )
+        def handle_var_link_click(n_clicks, ids):
+            if not n_clicks or not ids:  # Add check for ids
+                return dash.no_update
+            
+            try:
+                # Find which link was clicked
+                clicked_idx = next((i for i, clicks in enumerate(n_clicks) if clicks), None)
+                if clicked_idx is None or clicked_idx >= len(ids):  # Add bounds check
+                    return dash.no_update
+                    
+                var_name = ids[clicked_idx]['name']
+                if not var_name:  # Add check for var_name
+                    return dash.no_update
+                    
+                return f"var::{var_name}"
+            except Exception as e:
+                print(f"Error handling variable link click: {str(e)}")
+                return dash.no_update
+
+        @self.app.callback(
+            Output('toggle-view-button', 'style'),
+            Input('parse-result', 'children'),
             Input('symbol-search-dropdown', 'value')
         )
-        def update_dependency_graph(selected_value):
+        def show_toggle_button(parse_result, selected_value):
+            if not parse_result or isinstance(parse_result, str) or not selected_value:
+                return {'display': 'none'}
+            
+            try:
+                if selected_value.startswith('var::'):
+                    symbol_type = 'var'
+                    symbol_name = selected_value[5:]
+                    graph = self.code_analyzer.get_variable_dependencies(symbol_name)
+                    # Only show button if there are more than 25 nodes
+                    if len(graph.nodes) > 25:
+                        return {'display': 'inline-block'}
+            except Exception as e:
+                print(f"Error checking graph size: {str(e)}")
+            
+            return {'display': 'none'}
+
+        @self.app.callback(
+            Output('toggle-view-button', 'children'),
+            Input('toggle-view-button', 'n_clicks')
+        )
+        def update_toggle_text(n_clicks):
+            if n_clicks and n_clicks % 2 == 1:
+                return "Show Focused View"
+            return "Show All Dependencies"
+
+        @self.app.callback(
+            Output('dependency-graph', 'elements'),
+            Input('symbol-search-dropdown', 'value'),
+            Input('toggle-view-button', 'n_clicks')
+        )
+        def update_dependency_graph(selected_value, n_clicks):
             if not selected_value:
                 return []
             
             try:
-                # Parse the selection
-                symbol_type, symbol_name = selected_value.split(':')
-                
-                if symbol_type == 'var':
-                    # Get the dependency subgraph
-                    graph = self.code_analyzer.visualize_dependencies(symbol_name)
+                if selected_value.startswith('var::'):
+                    symbol_type = 'var'
+                    symbol_name = selected_value[5:]
+                    show_all = n_clicks and n_clicks % 2 == 1
+                    graph = self.code_analyzer.visualize_dependencies(symbol_name, show_all=show_all)
                     
                     # Convert networkx graph to cytoscape format
                     elements = []

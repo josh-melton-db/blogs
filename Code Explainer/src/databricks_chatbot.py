@@ -5,6 +5,7 @@ from .components.catalog_picker import CatalogPicker
 from .components.chat_interface import ChatInterface
 from .styles.catalog_picker import catalog_picker_styles
 from .styles.chat_interface import chat_interface_styles
+from .services.code_analyzer import CodeAnalyzer
 
 class DatabricksChatbot:
     def __init__(self, app, endpoint_name, height='600px'):
@@ -17,9 +18,12 @@ class DatabricksChatbot:
             print(f'Error initializing WorkspaceClient: {str(e)}')
             self.w = None
 
-        # Initialize components
-        self.catalog_picker = CatalogPicker(app, self.w)
-        self.chat_interface = ChatInterface(app, self.w, endpoint_name)
+        # Create single shared CodeAnalyzer instance
+        self.code_analyzer = CodeAnalyzer(self.w)
+
+        # Initialize components with shared analyzer
+        self.catalog_picker = CatalogPicker(app, self.w, self.code_analyzer)
+        self.chat_interface = ChatInterface(app, self.w, endpoint_name, self.code_analyzer)
         
         self.layout = self._create_layout()
         self._add_custom_css()
@@ -41,7 +45,7 @@ class DatabricksChatbot:
                 html.Div([
                     # Add Variable/Function Search Section (initially hidden)
                     html.Div([
-                        html.Label('Search Variables and Functions', className='fw-bold mb-1'),
+                        html.Label('Search Variables', className='fw-bold mb-1'),
                         dcc.Dropdown(
                             id='symbol-search-dropdown',
                             options=[],
@@ -148,7 +152,7 @@ class DatabricksChatbot:
             
             /* Add styles for clickable symbols */
             .clickable-symbol {{
-                color: #3D5A80;
+                color: #0066cc;
                 text-decoration: none;
                 cursor: pointer;
             }}

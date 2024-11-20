@@ -1,15 +1,15 @@
-from dash import html, dcc, Input, Output, State, ctx
+from dash import html, dcc, Input, Output, State, ctx, no_update
 import dash_bootstrap_components as dbc
 from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
 from ..services.code_analyzer import CodeAnalyzer
 import re
 
 class ChatInterface:
-    def __init__(self, app, workspace_client, endpoint_name):
+    def __init__(self, app, workspace_client, endpoint_name, code_analyzer):
         self.app = app
         self.w = workspace_client
         self.endpoint_name = endpoint_name
-        self.code_analyzer = CodeAnalyzer(workspace_client)
+        self.code_analyzer = code_analyzer
         self._create_callbacks()
 
     def _create_callbacks(self):
@@ -55,25 +55,47 @@ class ChatInterface:
                 
                 # Prepare focused context from the selected file and symbol
                 code_context = ""
+                
                 if file_path and selected_symbol:
                     try:
                         # Parse the symbol type and name
-                        symbol_type, symbol_name = selected_symbol.split(':')
-                        
-                        if symbol_type == 'var':
-                            # Get variable details using the existing method
-                            var_info = self.code_analyzer.get_variable_info(symbol_name)
-                            if var_info:
-                                code_context = (
-                                    f"\nContext:\n"
-                                    f"- File: {file_path}\n"
-                                    f"- Variable: {symbol_name}\n"
-                                    f"- Type: {var_info['type']}\n"
-                                    f"- Scope: {var_info['function'] or 'global'}\n"
-                                    f"- Is Pointer: {var_info['is_pointer']}\n"
-                                    f"- Dependencies: {', '.join(var_info['dependencies']) or 'none'}\n"
-                                    f"- Used By: {', '.join(var_info['dependents']) or 'none'}\n"
-                                )
+                        if '::' in selected_symbol:
+                            symbol_type, symbol_name = selected_symbol.split('::', 1)
+                            
+                            if symbol_type == 'var' and symbol_name:
+                                var_info = self.code_analyzer.get_variable_info(symbol_name)
+                                
+                                if var_info:
+                                    # Limit to 10 most important dependencies
+                                    upstream_details = []
+                                    for up_var in var_info['upstream'][:10]:  # Limit to first 10
+                                        up_info = self.code_analyzer.get_variable_info(up_var)
+                                        if up_info:
+                                            upstream_details.append(
+                                                f"  - {up_var} ({up_info['type']}) in {up_info['function'] or 'global'}"
+                                            )
+                                
+                                    downstream_details = []
+                                    for down_var in var_info['downstream'][:10]:  # Limit to first 10
+                                        down_info = self.code_analyzer.get_variable_info(down_var)
+                                        if down_info:
+                                            downstream_details.append(
+                                                f"  - {down_var} ({down_info['type']}) in {down_info['function'] or 'global'}"
+                                            )
+
+                                    code_context = (
+                                        f"\nContext:\n"
+                                        f"- File: {file_path}\n"
+                                        f"- Variable: {symbol_name}\n"
+                                        f"- Type: {var_info['type']}\n"
+                                        f"- Scope: {var_info['function'] or 'global'}\n"
+                                        f"- Is Pointer: {var_info['is_pointer']}\n"
+                                        f"\nUpstream Dependencies:\n"
+                                        + ('\n'.join(upstream_details) if upstream_details else "  - none")
+                                        + f"\n\nDownstream Dependencies:\n"
+                                        + ('\n'.join(downstream_details) if downstream_details else "  - none")
+                                        + "\n"
+                                    )
                     except Exception as e:
                         code_context = f"\nNote: Failed to get variable details: {str(e)}\n"
                 
@@ -107,7 +129,6 @@ class ChatInterface:
                 })
                 
             except Exception as e:
-                print(f'Error getting response: {str(e)}')
                 chat_history.append({
                     'role': 'assistant',
                     'content': f'Error: {str(e)}'
@@ -202,6 +223,16 @@ class ChatInterface:
                     'margin-bottom': '10px'
                 }
             return {'display': 'none'}
+
+        @self.app.callback(
+            Output('chat-history-store', 'data', allow_duplicate=True),
+            Input('clear-button', 'n_clicks'),
+            prevent_initial_call=True
+        )
+        def clear_chat_history(n_clicks):
+            if n_clicks:
+                return []
+            return no_update
 
     def create_chat_layout(self):
         return html.Div([
