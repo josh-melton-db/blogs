@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import List, Set, Dict, Optional
 import re
 import networkx as nx
+from .vector_store import CodeVectorStore
 
 @dataclass
 class Variable:
@@ -23,6 +24,8 @@ class CodeAnalyzer:
         self.dependency_graph = nx.DiGraph()
         self.current_file = None  # Add this to track current file
         self.parsed_files = {}    # Add this to store parsed results
+        # Initialize the vector store
+        self.vector_store = CodeVectorStore()
         
     def read_file_contents(self, file_path: str) -> str:
         """Read contents of a single file from the volume"""
@@ -46,6 +49,12 @@ class CodeAnalyzer:
         self.current_file = file_path
         
         content = self.read_file_contents(file_path)
+        
+        # Add content to vector store
+        try:
+            self.vector_store.add_file(file_path, content)
+        except Exception as e:
+            print(f"Warning: Failed to add to vector store: {str(e)}")
         
         # Remove comments first
         content = self.remove_comments(content)
@@ -302,6 +311,14 @@ class CodeAnalyzer:
         )
         
         return symbol_info
+
+    def search_code(self, query: str, n_results: int = 5) -> list:
+        """Search through parsed code using vector similarity"""
+        try:
+            return self.vector_store.search(query, n_results)
+        except Exception as e:
+            print(f"Error searching code: {str(e)}")
+            return []
 
 class SymbolInfo:
     def __init__(self, name, type, dependencies, used_by, function_name):

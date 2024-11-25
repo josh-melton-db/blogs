@@ -4,6 +4,8 @@ import dash_bootstrap_components as dbc
 from ..services.code_analyzer import CodeAnalyzer
 import dash_cytoscape as cyto
 import os
+import requests
+from github import Github
 
 class CatalogPicker:
     def __init__(self, app, workspace_client, code_analyzer):
@@ -60,6 +62,16 @@ class CatalogPicker:
                 placeholder='Select a file...',
                 className='mb-3'
             ),
+            
+            # Add download container with spinner
+            html.Div([
+                html.Div(id='download-files-container'),
+                dbc.Spinner(
+                    id='download-spinner',
+                    color='primary',
+                    spinner_style={'display': 'none'},
+                ),
+            ], className='d-flex align-items-center gap-2'),
             
             # Parse result and view toggle in a row
             html.Div([
@@ -132,13 +144,14 @@ class CatalogPicker:
         @self.app.callback(
             Output('file-picker-dropdown', 'options'),
             Output('file-picker-dropdown', 'value'),
+            Output('download-files-container', 'children'),
             Input('volume-dropdown', 'value'),
             State('catalog-dropdown', 'value'),
             State('schema-dropdown', 'value')
         )
         def update_file_options(selected_volume, selected_catalog, selected_schema):
             if not selected_catalog or not selected_schema or not selected_volume:
-                return [], None
+                return [], None, None
             
             try:
                 volume_path = f'/Volumes/{selected_catalog}/{selected_schema}/{selected_volume}'
@@ -148,6 +161,17 @@ class CatalogPicker:
                     for entry in files
                     if entry.path.endswith('.c')
                 ]
+                
+                # Show download button if no C files found
+                if not file_options:
+                    download_button = dbc.Button(
+                        "Download SQLite Example Files",
+                        id='download-sqlite-files',
+                        color='primary',
+                        size='sm',
+                        className='mt-2'
+                    )
+                    return [], None, download_button
                 
                 # Updated default file logic
                 default_value = next(
@@ -160,10 +184,10 @@ class CatalogPicker:
                     selected_volume == self.default_volume
                 ) else None
                 
-                return file_options, default_value
+                return file_options, default_value, None
             except Exception as e:
                 print(f'Error fetching files: {str(e)}')
-                return [], None
+                return [], None, None
 
         @self.app.callback(
             Output('parse-result', 'children'),
@@ -457,3 +481,74 @@ class CatalogPicker:
             if n_clicks and n_clicks % 2 == 1:
                 return "Show Focused View"
             return "Show All Dependencies"
+
+        @self.app.callback(
+            Output('parse-result', 'children', allow_duplicate=True),
+            Output('file-picker-dropdown', 'options', allow_duplicate=True),
+            Output('download-files-container', 'children', allow_duplicate=True),
+            Input('download-sqlite-files', 'n_clicks'),
+            State('catalog-dropdown', 'value'),
+            State('schema-dropdown', 'value'),
+            State('volume-dropdown', 'value'),
+            prevent_initial_call=True
+        )
+        def download_sqlite_files(n_clicks, catalog, schema, volume):
+            if not n_clicks:
+                return dash.no_update, dash.no_update, dash.no_update
+            
+            try:
+                volume_path = f'/Volumes/{catalog}/{schema}/{volume}'
+                g = Github()
+                repo = g.get_repo("sqlite/sqlite")
+                contents = repo.get_contents("src")
+                
+                downloaded_files = []
+                for content in contents:
+                    if content.name in ['btree.c', 'btree.h']:
+                        file_content = requests.get(content.download_url).text
+                        file_path = f"{volume_path}/{content.name}"
+                        self.w.files.upload(file_path, file_content.encode())
+                        downloaded_files.append(content.name)
+                
+                # Get updated file list
+                files = self.w.files.list_directory_contents(volume_path)
+                file_options = [
+                    {'label': entry.path.split('/')[-1], 'value': entry.path}
+                    for entry in files
+                    if entry.path.endswith('.c')
+                ]
+                
+                return (
+                    html.Div(
+                        f"Successfully downloaded: {', '.join(downloaded_files)}",
+                        style={'color': 'green', 'marginTop': '10px'}
+                    ),
+                    file_options,  # Update the file picker options
+                    None  # Remove the download button
+                )
+            except Exception as e:
+                return (
+                    html.Div(
+                        f"Error downloading files: {str(e)}",
+                        style={'color': 'red', 'marginTop': '10px'}
+                    ),
+                    [],
+                    None
+                )
+
+        @self.app.callback(
+            Output('download-spinner', 'spinner_style'),
+            Input('download-sqlite-files', 'n_clicks'),
+            State('download-spinner', 'spinner_style'),
+        )
+        def toggle_spinner(n_clicks, current_style):
+            if not n_clicks:
+                return {'display': 'none'}
+            
+            ctx = callback_context
+            if ctx.triggered:
+                button_id = ctx.triggered[0]['prop_id'].split('.')[0]
+                if button_id == 'download-sqlite-files':
+                    return {'display': 'block'}
+            
+            return {'display': 'none'}

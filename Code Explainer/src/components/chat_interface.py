@@ -56,6 +56,14 @@ class ChatInterface:
                 # Prepare focused context from the selected file and symbol
                 code_context = ""
                 
+                # Add vector search results to context
+                search_results = self.code_analyzer.search_code(last_message)
+                if search_results:
+                    code_context += "Relevant code segments:\n\n"
+                    for result in search_results:
+                        code_context += f"From {result['file_path']}:\n```c\n{result['content']}\n```\n\n"
+                
+                # Add selected symbol context if available
                 if file_path and selected_symbol:
                     try:
                         # Parse the symbol type and name
@@ -83,7 +91,7 @@ class ChatInterface:
                                                 f"  - {down_var} ({down_info['type']}) in {down_info['function'] or 'global'}"
                                             )
 
-                                    code_context = (
+                                    code_context += (
                                         f"Context about the code being discussed:\n"
                                         f"- File: {file_path}\n"
                                         f"- Variable: {symbol_name}\n"
