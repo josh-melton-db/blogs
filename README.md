@@ -1,1 +1,1 @@
-# Repository for code supporting Databricks blogs
+# Repository for code supporting Josh Melton's blogs
