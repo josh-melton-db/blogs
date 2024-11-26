@@ -5,7 +5,7 @@ from ..services.code_analyzer import CodeAnalyzer
 import dash_cytoscape as cyto
 import os
 import requests
-from github import Github
+from github import Github # type: ignore
 
 class CatalogPicker:
     def __init__(self, app, workspace_client, code_analyzer):
